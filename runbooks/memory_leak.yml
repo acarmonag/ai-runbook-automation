@@ -1,0 +1,32 @@
+name: memory_leak
+description: |
+  Handles memory leak detection and high memory usage scenarios.
+  This runbook analyzes memory growth trends, looks for OOM events in logs,
+  runs memory diagnostics, and restarts the service to reclaim memory.
+  Escalates if memory grows again rapidly after restart (indicating active leak).
+
+triggers:
+  - MemoryLeakDetected
+  - HighMemoryUsage
+  - ContainerOOMKilled
+  - MemoryUsageHigh
+
+actions:
+  - "get_metrics: Query memory usage trend over time — container_memory_usage_bytes by (container_name) over the past 30 minutes"
+  - "get_metrics: Query memory usage as percentage of limit — container_memory_usage_bytes / container_spec_memory_limit_bytes"
+  - "get_recent_logs: Fetch last 300 lines to look for OOM killer messages, memory allocation errors"
+  - "run_diagnostic: Run memory_pressure diagnostic to get current system memory state"
+  - "restart_service: Restart the leaking service to reclaim memory (requires approval)"
+  - "get_metrics: Re-query memory after restart to confirm memory was reclaimed"
+  - "get_metrics: Query memory growth rate 5 minutes after restart — if growing at same rate, escalate"
+
+escalation_threshold: |
+  Escalate if memory usage returns to >85% of limit within 10 minutes after
+  restart, indicating an active memory leak that requires code-level investigation.
+  Also escalate if OOM kills are occurring faster than restarts can keep up.
+
+metadata:
+  severity: P2
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2024-01-01"

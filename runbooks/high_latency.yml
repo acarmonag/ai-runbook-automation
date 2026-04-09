@@ -1,0 +1,32 @@
+name: high_latency
+description: |
+  Handles elevated response latency and slow endpoint issues.
+  This runbook identifies which endpoints are slow, checks resource
+  utilization, and scales the service if CPU is saturated. Escalates
+  if p99 latency remains unacceptable after scaling.
+
+triggers:
+  - HighLatency
+  - SlowEndpoint
+  - HighResponseTime
+  - P99LatencyHigh
+
+actions:
+  - "get_metrics: Query p50/p95/p99 latency by endpoint — histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) by (handler)"
+  - "get_metrics: Query CPU utilization — rate(container_cpu_usage_seconds_total[5m]) by (container_name)"
+  - "get_service_status: Check current service health and replica count"
+  - "get_metrics: Query memory usage — container_memory_usage_bytes by (container_name)"
+  - "run_diagnostic: Run memory_pressure diagnostic to check for memory saturation causing latency"
+  - "scale_service: Scale up the service if CPU utilization is above 80% — add replicas to distribute load"
+  - "get_metrics: Re-query p99 latency 2 minutes after scaling to verify improvement"
+
+escalation_threshold: |
+  Escalate if p99 latency remains above 5 seconds after scaling to maximum
+  allowed replicas (8). Also escalate if latency is caused by upstream
+  dependency issues rather than resource saturation.
+
+metadata:
+  severity: P2
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2024-01-01"

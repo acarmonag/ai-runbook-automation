@@ -1,0 +1,32 @@
+name: cpu_spike
+description: |
+  Handles CPU saturation and sustained high CPU usage.
+  This runbook identifies which processes are consuming CPU, runs
+  profiling diagnostics, and scales the service to distribute load.
+  Escalates if CPU remains saturated after scaling to maximum replicas.
+
+triggers:
+  - HighCPU
+  - CPUSaturation
+  - CPUThrottling
+  - ContainerCPUHigh
+
+actions:
+  - "get_metrics: Query CPU usage by container — rate(container_cpu_usage_seconds_total[5m]) by (container_name, pod)"
+  - "get_metrics: Query CPU throttling — rate(container_cpu_cfs_throttled_seconds_total[5m]) / rate(container_cpu_cfs_periods_total[5m])"
+  - "run_diagnostic: Run memory_pressure diagnostic (high CPU and memory often co-occur)"
+  - "run_diagnostic: Run connection_count diagnostic — high connections can cause CPU saturation"
+  - "get_recent_logs: Fetch last 100 lines to look for hot-loop indicators or excessive request logging"
+  - "scale_service: Scale service to distribute CPU load across more replicas"
+  - "get_metrics: Re-query CPU utilization 3 minutes after scaling to verify relief"
+
+escalation_threshold: |
+  Escalate if CPU stays above 90% after scaling to maximum 8 replicas.
+  This indicates a code-level issue (hot loop, inefficient query, etc.)
+  that cannot be solved by horizontal scaling alone.
+
+metadata:
+  severity: P2
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2024-01-01"

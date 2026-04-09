@@ -1,0 +1,30 @@
+name: high_error_rate
+description: |
+  Handles elevated HTTP error rates and service degradation.
+  This runbook investigates the source of errors, attempts to identify
+  known error patterns in logs, and restarts the service if a known bug
+  is detected. Escalates if error rate remains high after restart.
+
+triggers:
+  - HighErrorRate
+  - ServiceDegraded
+  - HighHttpErrorRate
+
+actions:
+  - "get_metrics: Query current error rate breakdown by status code — rate(http_requests_total{status=~'5..'}[5m]) and rate(http_requests_total[5m]) to compute error percentage"
+  - "get_metrics: Query error rate by endpoint — rate(http_requests_total{status=~'5..'}[5m]) by (handler, method)"
+  - "get_recent_logs: Fetch last 200 lines from the affected service to identify error patterns"
+  - "run_diagnostic: Run error_rate diagnostic to get current aggregate error rate from Prometheus"
+  - "restart_service: Restart the service IF log analysis confirms errors match a known bug pattern (requires approval)"
+  - "get_metrics: Re-query error rate after restart to verify remediation was successful"
+
+escalation_threshold: |
+  Escalate if HTTP error rate remains above 10% for more than 5 minutes after
+  service restart. Also escalate immediately if error pattern is unknown or
+  indicates data corruption.
+
+metadata:
+  severity: P2
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2024-01-01"
