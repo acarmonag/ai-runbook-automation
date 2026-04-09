@@ -6,10 +6,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # LLM backend — override to "claude" + set ANTHROPIC_API_KEY to use Claude
+      # LLM backend — "ollama" uses your local Ollama; "claude" requires ANTHROPIC_API_KEY
       - LLM_BACKEND=${LLM_BACKEND:-ollama}
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:8b}
+      # Points to Ollama running on the host machine (not in Docker)
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:14b}
       # Claude (only needed when LLM_BACKEND=claude)
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       # Infrastructure
@@ -24,8 +25,6 @@ services:
       - agent-data:/data
       - ./runbooks:/app/runbooks:ro
     depends_on:
-      ollama:
-        condition: service_healthy
       mock-prometheus:
         condition: service_started
     restart: unless-stopped
@@ -35,22 +34,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 15s
-
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama-data:/root/.ollama
-    # Pull qwen3:8b on first start (lighter model suited for containers)
-    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull qwen3:8b && wait"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 120s   # model pull can take a while
 
   mock-prometheus:
     build:
@@ -79,4 +62,3 @@ services:
 
 volumes:
   agent-data:
-  ollama-data:
