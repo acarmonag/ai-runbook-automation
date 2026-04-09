@@ -1,0 +1,14 @@
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+docker>=7.0.0
+httpx>=0.26.0
+python-json-logger>=2.0.7
+pyyaml>=6.0.1
+aiofiles>=23.2.1
+psutil>=5.9.8
+
+# LLM backends — both installed; which one runs is controlled by LLM_BACKEND env var
+openai>=1.30.0        # Ollama uses the OpenAI-compatible API (default backend)
+anthropic>=0.34.0     # Claude backend (only used when LLM_BACKEND=claude)

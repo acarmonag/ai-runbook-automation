@@ -1,0 +1,18 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir fastapi uvicorn httpx
+
+COPY simulator/mock_prometheus.py ./simulator/mock_prometheus.py
+COPY simulator/__init__.py ./simulator/__init__.py
+
+RUN groupadd -r prometheus && useradd -r -g prometheus prometheus
+USER prometheus
+
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 9091
+
+CMD ["python", "simulator/mock_prometheus.py"]

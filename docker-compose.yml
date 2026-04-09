@@ -1,0 +1,82 @@
+services:
+  agent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      # LLM backend — override to "claude" + set ANTHROPIC_API_KEY to use Claude
+      - LLM_BACKEND=${LLM_BACKEND:-ollama}
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen3:8b}
+      # Claude (only needed when LLM_BACKEND=claude)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Infrastructure
+      - PROMETHEUS_URL=http://mock-prometheus:9091
+      - APPROVAL_MODE=${APPROVAL_MODE:-AUTO}
+      - NUM_WORKERS=${NUM_WORKERS:-2}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DRY_RUN=${DRY_RUN:-false}
+      - INCIDENTS_FILE=/data/incidents.jsonl
+      - ESCALATION_LOG_FILE=/data/escalations.jsonl
+    volumes:
+      - agent-data:/data
+      - ./runbooks:/app/runbooks:ro
+    depends_on:
+      ollama:
+        condition: service_healthy
+      mock-prometheus:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    # Pull qwen3:8b on first start (lighter model suited for containers)
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull qwen3:8b && wait"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s   # model pull can take a while
+
+  mock-prometheus:
+    build:
+      context: .
+      dockerfile: Dockerfile.prometheus
+    ports:
+      - "9091:9091"
+    environment:
+      - MOCK_SCENARIO=${MOCK_SCENARIO:-high_error_rate}
+      - PORT=9091
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+    depends_on:
+      - agent-api
+    restart: unless-stopped
+
+volumes:
+  agent-data:
+  ollama-data:

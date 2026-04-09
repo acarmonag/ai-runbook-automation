@@ -1,0 +1,25 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'service']
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+  receiver: 'agent-webhook'
+
+receivers:
+  - name: 'agent-webhook'
+    webhook_configs:
+      - url: 'http://agent-api:8000/alerts/webhook'
+        send_resolved: false
+        http_config:
+          follow_redirects: true
+        max_alerts: 10
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'service']
