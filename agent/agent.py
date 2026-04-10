@@ -25,6 +25,9 @@ from agent.state_machine import IncidentStateMachine, IncidentState
 
 logger = logging.getLogger(__name__)
 
+_LLM_MAX_RETRIES = 3
+_LLM_RETRY_DELAYS = [2, 5, 10]  # seconds between retries
+
 SYSTEM_PROMPT = """You are an autonomous SRE (Site Reliability Engineering) automation agent.
 Your role is to investigate and remediate production incidents with precision and care.
 
@@ -246,16 +249,14 @@ class SREAgent:
             iteration += 1
             logger.debug(f"[{incident_id}] Agent iteration {iteration}")
 
-            try:
-                response: LLMResponse = self.llm.chat(
-                    system=SYSTEM_PROMPT,
-                    messages=messages,
-                    tools=TOOL_DEFINITIONS,
-                )
-            except Exception as e:
-                logger.error(f"[{incident_id}] LLM error: {e}")
+            response = self._llm_with_retry(incident_id, messages)
+            if response is None:
                 state_machine.transition(IncidentState.FAILED)
-                return self._build_error_report(incident_id, alert, str(e), actions_taken)
+                return self._build_error_report(
+                    incident_id, alert,
+                    "LLM unreachable after retries — check Ollama/Claude connectivity",
+                    actions_taken,
+                )
 
             # Record in transcript
             reasoning_transcript.append({
@@ -360,6 +361,29 @@ class SREAgent:
         )
 
     # ─── Helpers ──────────────────────────────────────────────────────────────
+
+    def _llm_with_retry(
+        self, incident_id: str, messages: list[dict]
+    ) -> LLMResponse | None:
+        """Call the LLM with exponential backoff. Returns None if all retries fail."""
+        last_exc: Exception | None = None
+        for attempt in range(_LLM_MAX_RETRIES):
+            try:
+                return self.llm.chat(
+                    system=SYSTEM_PROMPT,
+                    messages=messages,
+                    tools=TOOL_DEFINITIONS,
+                )
+            except Exception as exc:
+                last_exc = exc
+                delay = _LLM_RETRY_DELAYS[attempt]
+                logger.warning(
+                    f"[{incident_id}] LLM error (attempt {attempt + 1}/{_LLM_MAX_RETRIES}): {exc} — retrying in {delay}s"
+                )
+                time.sleep(delay)
+
+        logger.error(f"[{incident_id}] All LLM retries exhausted. Last error: {last_exc}")
+        return None
 
     def _build_initial_message(
         self, incident_id: str, alert: dict[str, Any], runbook_context: str
