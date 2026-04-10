@@ -17,6 +17,10 @@ services:
       - REDIS_URL=redis://redis:6379
       - APPROVAL_MODE=${APPROVAL_MODE:-AUTO}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - API_KEY=${API_KEY:-}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - PAGERDUTY_ROUTING_KEY=${PAGERDUTY_ROUTING_KEY:-}
+      - CORRELATION_WINDOW_SECONDS=${CORRELATION_WINDOW_SECONDS:-300}
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,6 +52,9 @@ services:
       - APPROVAL_MODE=${APPROVAL_MODE:-AUTO}
       - NUM_WORKERS=${NUM_WORKERS:-4}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - PAGERDUTY_ROUTING_KEY=${PAGERDUTY_ROUTING_KEY:-}
+      - CORRELATION_WINDOW_SECONDS=${CORRELATION_WINDOW_SECONDS:-300}
     volumes:
       - ./runbooks:/app/runbooks:ro
     depends_on:

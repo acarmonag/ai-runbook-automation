@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.alert_queue import AlertQueue
+from api.auth import require_api_key
 from api.models import (
     AlertmanagerWebhook,
     ApprovalResponse,
@@ -90,6 +91,7 @@ app = FastAPI(
     description="LLM-powered autonomous SRE remediation agent",
     version="2.0.0",
     lifespan=lifespan,
+    dependencies=[Depends(require_api_key)],
 )
 
 app.add_middleware(

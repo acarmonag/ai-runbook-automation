@@ -15,10 +15,10 @@ let backoffMs = 1_000;
 
 function getWsUrl(): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  // In dev, Vite proxies /ws → ws://localhost:8000/ws (ws: true in vite.config.ts).
-  // In production, VITE_WS_HOST can override (e.g. "api.example.com").
   const host = import.meta.env.VITE_WS_HOST ?? window.location.host;
-  return `${proto}//${host}/ws`;
+  const apiKey = import.meta.env.VITE_API_KEY as string | undefined;
+  const qs = apiKey ? `?api_key=${encodeURIComponent(apiKey)}` : "";
+  return `${proto}//${host}/ws${qs}`;
 }
 
 function connect(): void {
