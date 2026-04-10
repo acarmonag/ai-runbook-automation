@@ -144,6 +144,7 @@ class HealthResponse(BaseModel):
     status: str  # "healthy", "degraded", "unhealthy"
     claude_api: str  # "reachable", "unreachable"
     prometheus: str  # "reachable", "unreachable"
+    redis: str = "unknown"  # "reachable", "unreachable"
     queue_depth: int
     active_workers: int
     incidents_processed: int

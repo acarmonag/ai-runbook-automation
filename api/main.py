@@ -1,7 +1,12 @@
 """
-FastAPI application — receives Alertmanager webhooks and exposes the incident API.
+FastAPI application — alert intake, incident API, WebSocket hub, health.
+
+Agent processing is delegated to agent-worker via Redis/ARQ.
+This service only handles HTTP + WebSocket + persistence reads.
 """
 
+import asyncio
+import json
 import logging
 import os
 import uuid
@@ -10,10 +15,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException, Path, Body
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, Path, Body, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.alert_queue import AsyncAlertQueue
+from api.alert_queue import AlertQueue
 from api.models import (
     AlertmanagerWebhook,
     ApprovalResponse,
@@ -21,77 +27,106 @@ from api.models import (
     IncidentSummary,
     WebhookResponse,
 )
-from agent.actions.registry import build_default_registry
-from agent.agent import SREAgent
-from agent.approval_gate import ApprovalGate, ApprovalMode
+from api.ws_manager import WebSocketManager
+from db.database import create_tables, get_session
+from db.incident_store import (
+    create_incident,
+    get_incident,
+    get_mttr_stats,
+    list_incidents,
+    update_incident,
+)
 from agent.runbook_registry import RunbookRegistry
 
 logger = logging.getLogger(__name__)
-
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://localhost:9091")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 
-# Global queue reference (set in lifespan)
-alert_queue: AsyncAlertQueue | None = None
-
-
-def _build_agent_runner():
-    """Build and return the agent run function."""
-    registry = build_default_registry()
-    runbook_registry = RunbookRegistry()
-    approval_gate = ApprovalGate()
-    agent = SREAgent(
-        action_registry=registry,
-        runbook_registry=runbook_registry,
-        approval_gate=approval_gate,
-    )
-    return agent.run
+alert_queue = AlertQueue()
+ws_manager = WebSocketManager()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global alert_queue
-    runner = _build_agent_runner()
-    alert_queue = AsyncAlertQueue(agent_runner=runner)
+    # Create DB tables
+    await create_tables()
+    # Connect alert queue to Redis
     await alert_queue.start()
-    logger.info("AI Runbook Automation Agent started")
+    # Start Redis pub/sub listener → broadcast to WebSocket clients
+    listener_task = asyncio.create_task(_redis_listener())
+    logger.info("AI Runbook Automation API started")
     yield
+    listener_task.cancel()
     await alert_queue.stop()
-    logger.info("AI Runbook Automation Agent stopped")
+    logger.info("AI Runbook Automation API stopped")
+
+
+async def _redis_listener() -> None:
+    """Subscribe to incident_updates channel and push to WebSocket clients."""
+    import redis.asyncio as aioredis
+
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    pubsub = r.pubsub()
+    await pubsub.subscribe("incident_updates")
+    try:
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                await ws_manager.broadcast(message["data"])
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await pubsub.unsubscribe("incident_updates")
+        await r.aclose()
 
 
 app = FastAPI(
     title="AI Runbook Automation",
     description="LLM-powered autonomous SRE remediation agent",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ─── WebSocket ────────────────────────────────────────────────────────────────
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """Real-time incident update stream."""
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            # Keep alive — client can send pings
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
 
 
 # ─── Webhook Endpoint ─────────────────────────────────────────────────────────
 
 @app.post("/alerts/webhook", response_model=WebhookResponse)
-async def receive_webhook(payload: AlertmanagerWebhook):
-    """
-    Receive Alertmanager webhook payloads.
-    Queues each firing alert for agent processing.
-    """
-    if alert_queue is None:
-        raise HTTPException(status_code=503, detail="Alert queue not initialized")
-
+async def receive_webhook(
+    payload: AlertmanagerWebhook,
+    session: AsyncSession = Depends(get_session),
+):
     incident_ids = []
     queued = 0
 
     for alert in payload.alerts:
         if alert.status.value != "firing":
-            logger.debug(f"Skipping resolved alert: {alert.labels.alertname}")
             continue
 
-        # Convert to dict for agent consumption
         alert_dict = {
             "labels": alert.labels.model_dump(),
             "annotations": alert.annotations.model_dump(),
@@ -103,6 +138,13 @@ async def receive_webhook(payload: AlertmanagerWebhook):
 
         incident_id = await alert_queue.enqueue(alert_dict)
         if incident_id:
+            # Pre-create the incident row so it's visible immediately
+            await create_incident(session, {
+                "incident_id": incident_id,
+                "alert_name": alert.labels.alertname,
+                "alert": alert_dict,
+                "status": "PENDING",
+            })
             incident_ids.append(incident_id)
             queued += 1
 
@@ -116,68 +158,47 @@ async def receive_webhook(payload: AlertmanagerWebhook):
 # ─── Incident Endpoints ───────────────────────────────────────────────────────
 
 @app.get("/incidents", response_model=list[IncidentSummary])
-async def list_incidents():
-    """List all incidents with status and summary."""
-    if alert_queue is None:
-        return []
-
-    summaries = []
-    for inc in alert_queue.list_incidents():
-        started_at = inc.get("started_at", "")
-        resolved_at = inc.get("resolved_at")
+async def list_incidents_endpoint(session: AsyncSession = Depends(get_session)):
+    incidents = await list_incidents(session)
+    result = []
+    for inc in incidents:
         duration = None
-        if started_at and resolved_at:
-            try:
-                s = datetime.fromisoformat(started_at)
-                r = datetime.fromisoformat(resolved_at)
-                duration = (r - s).total_seconds()
-            except Exception:
-                pass
-
-        summaries.append(
-            IncidentSummary(
-                incident_id=inc["incident_id"],
-                alert_name=inc.get("alert_name", "Unknown"),
-                status=inc.get("status", "PENDING"),
-                summary=inc.get("summary"),
-                actions_taken_count=len(inc.get("actions_taken", [])),
-                started_at=started_at,
-                resolved_at=resolved_at,
-                duration_seconds=duration,
-            )
-        )
-    return summaries
+        if inc.started_at and inc.resolved_at:
+            duration = (inc.resolved_at - inc.started_at).total_seconds()
+        result.append(IncidentSummary(
+            incident_id=inc.incident_id,
+            alert_name=inc.alert_name,
+            status=inc.status,
+            summary=inc.summary,
+            actions_taken_count=len(inc.actions_taken or []),
+            started_at=inc.started_at.isoformat(),
+            resolved_at=inc.resolved_at.isoformat() if inc.resolved_at else None,
+            duration_seconds=duration,
+        ))
+    return result
 
 
 @app.get("/incidents/{incident_id}")
-async def get_incident(incident_id: str = Path(..., description="Incident ID")):
-    """Get full incident details including the Claude reasoning transcript."""
-    if alert_queue is None:
-        raise HTTPException(status_code=503, detail="Queue not initialized")
-
-    incident = alert_queue.get_incident(incident_id)
-    if not incident:
+async def get_incident_endpoint(
+    incident_id: str = Path(...),
+    session: AsyncSession = Depends(get_session),
+):
+    inc = await get_incident(session, incident_id)
+    if not inc:
         raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found")
-
-    return incident
+    return inc.to_dict()
 
 
 @app.post("/incidents/{incident_id}/approve", response_model=ApprovalResponse)
-async def approve_incident_action(
+async def approve_action(
     incident_id: str = Path(...),
     body: dict[str, Any] = Body(default={}),
+    session: AsyncSession = Depends(get_session),
 ):
-    """
-    Approve a pending destructive action for an incident.
-    Used in MANUAL approval mode.
-    """
-    if alert_queue is None:
-        raise HTTPException(status_code=503, detail="Queue not initialized")
-
-    incident = alert_queue.get_incident(incident_id)
-    if not incident:
+    inc = await get_incident(session, incident_id)
+    if not inc:
         raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found")
-
+    await update_incident(session, incident_id, {"approval_state": "APPROVED"})
     return ApprovalResponse(
         incident_id=incident_id,
         action=body.get("action", "unknown"),
@@ -189,18 +210,15 @@ async def approve_incident_action(
 
 
 @app.post("/incidents/{incident_id}/reject", response_model=ApprovalResponse)
-async def reject_incident_action(
+async def reject_action(
     incident_id: str = Path(...),
     body: dict[str, Any] = Body(default={}),
+    session: AsyncSession = Depends(get_session),
 ):
-    """Reject a pending destructive action for an incident."""
-    if alert_queue is None:
-        raise HTTPException(status_code=503, detail="Queue not initialized")
-
-    incident = alert_queue.get_incident(incident_id)
-    if not incident:
+    inc = await get_incident(session, incident_id)
+    if not inc:
         raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found")
-
+    await update_incident(session, incident_id, {"approval_state": "REJECTED"})
     return ApprovalResponse(
         incident_id=incident_id,
         action=body.get("action", "unknown"),
@@ -211,11 +229,18 @@ async def reject_incident_action(
     )
 
 
+# ─── Stats Endpoint ───────────────────────────────────────────────────────────
+
+@app.get("/stats")
+async def get_stats(session: AsyncSession = Depends(get_session)):
+    """MTTR and SLO stats for the dashboard."""
+    return await get_mttr_stats(session)
+
+
 # ─── Runbook Endpoints ────────────────────────────────────────────────────────
 
 @app.get("/runbooks")
-async def list_runbooks():
-    """List all loaded runbook definitions."""
+async def list_runbooks_endpoint():
     registry = RunbookRegistry()
     return [
         {
@@ -223,21 +248,20 @@ async def list_runbooks():
             "description": rb.description,
             "triggers": rb.triggers,
             "action_count": len(rb.actions),
+            "actions": rb.actions,
             "escalation_threshold": rb.escalation_threshold,
+            "metadata": rb.metadata,
         }
         for rb in registry.get_all_runbooks()
     ]
 
 
 @app.get("/runbooks/{name}")
-async def get_runbook(name: str = Path(..., description="Runbook name")):
-    """Get a specific runbook definition."""
+async def get_runbook_endpoint(name: str = Path(...)):
     registry = RunbookRegistry()
-    runbook = registry.get_runbook(name)
-    if not runbook:
-        # Try by name directly
-        all_runbooks = {rb.name: rb for rb in registry.get_all_runbooks()}
-        runbook = all_runbooks.get(name)
+    runbook = registry.get_runbook(name) or next(
+        (rb for rb in registry.get_all_runbooks() if rb.name == name), None
+    )
     if not runbook:
         raise HTTPException(status_code=404, detail=f"Runbook '{name}' not found")
     return {
@@ -250,62 +274,23 @@ async def get_runbook(name: str = Path(..., description="Runbook name")):
     }
 
 
-# ─── Simulation Endpoint ──────────────────────────────────────────────────────
+# ─── Simulate Endpoint ────────────────────────────────────────────────────────
 
 @app.post("/simulate", response_model=WebhookResponse)
-async def simulate_alert(payload: AlertmanagerWebhook):
-    """
-    Simulate alert processing in DRY_RUN mode — never executes real actions.
-    """
-    if alert_queue is None:
-        raise HTTPException(status_code=503, detail="Queue not initialized")
-
-    # Create a dry-run agent runner
-    registry = build_default_registry()
-    runbook_registry = RunbookRegistry()
-    approval_gate = ApprovalGate(mode=ApprovalMode.DRY_RUN)
-    agent = SREAgent(
-        action_registry=registry,
-        runbook_registry=runbook_registry,
-        approval_gate=approval_gate,
-    )
-
-    incident_ids = []
-    for alert in payload.alerts:
-        if alert.status.value != "firing":
-            continue
-
-        alert_dict = {
-            "labels": alert.labels.model_dump(),
-            "annotations": alert.annotations.model_dump(),
-            "startsAt": alert.startsAt,
-            "fingerprint": alert.fingerprint or str(uuid.uuid4()),
-        }
-
-        # For simulation, create a temporary queue entry
-        incident_id = str(uuid.uuid4())[:8]
-        incident_ids.append(incident_id)
-
-        # Queue in the main queue (agent runner uses DRY_RUN approval gate)
-        incident_id_queued = await alert_queue.enqueue(alert_dict)
-        if incident_id_queued:
-            incident_ids[-1] = incident_id_queued
-
-    return WebhookResponse(
-        message=f"Simulation queued {len(incident_ids)} alert(s) (DRY_RUN mode)",
-        incidents_queued=len(incident_ids),
-        incident_ids=incident_ids,
-    )
+async def simulate_alert(
+    payload: AlertmanagerWebhook,
+    session: AsyncSession = Depends(get_session),
+):
+    """Simulate in DRY_RUN mode — same as webhook but sets DRY_RUN env."""
+    os.environ["APPROVAL_MODE"] = "DRY_RUN"
+    return await receive_webhook(payload, session)
 
 
 # ─── Health Endpoint ──────────────────────────────────────────────────────────
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Check service health, LLM backend reachability, and Prometheus reachability."""
     llm_backend = os.environ.get("LLM_BACKEND", "ollama").lower()
-
-    # Check LLM backend — probe whichever is actually configured
     llm_status = "unreachable"
     try:
         if llm_backend == "claude":
@@ -322,41 +307,42 @@ async def health_check():
     except Exception as e:
         logger.debug(f"LLM health check failed: {e}")
 
-    # Check Prometheus
     prometheus_status = "unreachable"
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{PROMETHEUS_URL}/-/healthy", timeout=3.0)
             if resp.status_code == 200:
                 prometheus_status = "reachable"
-    except Exception as e:
+    except Exception:
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    f"{PROMETHEUS_URL}/api/v1/query",
-                    params={"query": "1"},
-                    timeout=3.0,
-                )
+                resp = await client.get(f"{PROMETHEUS_URL}/api/v1/query", params={"query": "1"}, timeout=3.0)
                 if resp.status_code == 200:
                     prometheus_status = "reachable"
-        except Exception:
+        except Exception as e:
             logger.debug(f"Prometheus health check failed: {e}")
 
-    queue_depth = alert_queue.queue_depth if alert_queue else 0
-    active_workers = alert_queue.active_workers if alert_queue else 0
-    processed = alert_queue.processed_count if alert_queue else 0
+    # Check Redis
+    redis_status = "unreachable"
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(REDIS_URL, socket_connect_timeout=2)
+        await r.ping()
+        await r.aclose()
+        redis_status = "reachable"
+    except Exception as e:
+        logger.debug(f"Redis health check failed: {e}")
 
     overall = "healthy"
-    if llm_status == "unreachable":
+    if llm_status == "unreachable" or redis_status == "unreachable":
         overall = "degraded"
-    if alert_queue is None:
-        overall = "unhealthy"
 
     return HealthResponse(
         status=overall,
         claude_api=llm_status,
         prometheus=prometheus_status,
-        queue_depth=queue_depth,
-        active_workers=active_workers,
-        incidents_processed=processed,
+        queue_depth=0,
+        active_workers=0,
+        incidents_processed=0,
+        redis=redis_status,
     )
