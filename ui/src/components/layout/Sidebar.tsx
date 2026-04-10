@@ -1,10 +1,11 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, BookOpen, Activity } from "lucide-react";
+import { LayoutDashboard, BookOpen, Activity, BarChart3 } from "lucide-react";
 import { clsx } from "clsx";
 
 const nav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/runbooks", label: "Runbooks", icon: BookOpen, end: false },
+  { to: "/stats", label: "MTTR / SLO", icon: BarChart3, end: false },
 ];
 
 export function Sidebar() {

@@ -4,6 +4,7 @@ import { TopBar } from "@/components/layout/TopBar";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { IncidentDetailPage } from "@/pages/IncidentDetailPage";
 import { RunbooksPage } from "@/pages/RunbooksPage";
+import { StatsPage } from "@/pages/StatsPage";
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
             <Route path="/" element={<DashboardPage />} />
             <Route path="/incidents/:id" element={<IncidentDetailPage />} />
             <Route path="/runbooks" element={<RunbooksPage />} />
+            <Route path="/stats" element={<StatsPage />} />
           </Routes>
         </main>
       </div>
