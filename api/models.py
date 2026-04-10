@@ -99,6 +99,7 @@ class Incident(BaseModel):
     started_at: str
     resolved_at: Optional[str] = None
     full_agent_response: Optional[str] = None
+    pir: Optional[dict[str, Any]] = None
 
 
 # ─── Approval Models ──────────────────────────────────────────────────────────

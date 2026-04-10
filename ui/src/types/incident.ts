@@ -60,6 +60,30 @@ export interface Incident {
   full_agent_response?: string;
   pending_action?: string;
   approval_state?: "PENDING" | "APPROVED" | "REJECTED";
+  pir?: PostIncidentReview;
+}
+
+export interface PirTimelineItem {
+  time: string;
+  event: string;
+}
+
+export interface PirActionItem {
+  owner: string;
+  action: string;
+  priority: "P1" | "P2" | "P3" | "P4";
+}
+
+export interface PostIncidentReview {
+  title: string;
+  severity: "P1" | "P2" | "P3" | "P4";
+  timeline: PirTimelineItem[];
+  root_cause: string;
+  contributing_factors: string[];
+  impact: string;
+  resolution: string;
+  action_items: PirActionItem[];
+  prevention: string[];
 }
 
 export interface WebhookResponse {

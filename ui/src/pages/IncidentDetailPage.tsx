@@ -7,6 +7,7 @@ import { ReasoningTranscript } from "@/components/incidents/ReasoningTranscript"
 import { ApprovalBanner } from "@/components/incidents/ApprovalBanner";
 import { Card } from "@/components/ui/Card";
 import { Spinner } from "@/components/ui/Spinner";
+import { PirPanel } from "@/components/incidents/PirPanel";
 import { formatDuration, formatTimestamp } from "@/lib/format";
 
 export function IncidentDetailPage() {
@@ -110,6 +111,18 @@ export function IncidentDetailPage() {
       <Card title={`Reasoning Transcript (${incident.reasoning_transcript.length} messages)`}>
         <ReasoningTranscript messages={incident.reasoning_transcript} />
       </Card>
+
+      {/* Post-Incident Review */}
+      {incident.pir && (
+        <Card title="Post-Incident Review">
+          <PirPanel pir={incident.pir} />
+        </Card>
+      )}
+      {!incident.pir && incident.status === "RESOLVED" && (
+        <Card title="Post-Incident Review">
+          <p className="text-sm text-zinc-500 italic">Generating PIR… refresh in a moment.</p>
+        </Card>
+      )}
     </div>
   );
 }

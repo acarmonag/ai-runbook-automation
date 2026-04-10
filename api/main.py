@@ -196,6 +196,20 @@ async def get_incident_endpoint(
     return inc.to_dict()
 
 
+@app.get("/incidents/{incident_id}/pir")
+async def get_pir(
+    incident_id: str = Path(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the auto-generated Post-Incident Review for a resolved incident."""
+    inc = await get_incident(session, incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found")
+    if not inc.pir:
+        raise HTTPException(status_code=404, detail="PIR not yet generated")
+    return inc.pir
+
+
 @app.post("/incidents/{incident_id}/approve", response_model=ApprovalResponse)
 async def approve_action(
     incident_id: str = Path(...),
