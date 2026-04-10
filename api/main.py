@@ -302,17 +302,25 @@ async def simulate_alert(payload: AlertmanagerWebhook):
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Check service health, Claude API reachability, and Prometheus reachability."""
-    # Check Claude API
-    claude_status = "unreachable"
+    """Check service health, LLM backend reachability, and Prometheus reachability."""
+    llm_backend = os.environ.get("LLM_BACKEND", "ollama").lower()
+
+    # Check LLM backend — probe whichever is actually configured
+    llm_status = "unreachable"
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
-        # Lightweight check — just list models
-        client.models.list()
-        claude_status = "reachable"
+        if llm_backend == "claude":
+            import anthropic
+            client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+            client.models.list()
+            llm_status = "reachable"
+        else:
+            ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{ollama_url}/api/tags", timeout=3.0)
+                if resp.status_code == 200:
+                    llm_status = "reachable"
     except Exception as e:
-        logger.debug(f"Claude API health check failed: {e}")
+        logger.debug(f"LLM health check failed: {e}")
 
     # Check Prometheus
     prometheus_status = "unreachable"
@@ -322,7 +330,6 @@ async def health_check():
             if resp.status_code == 200:
                 prometheus_status = "reachable"
     except Exception as e:
-        # Try query endpoint as fallback
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
@@ -340,14 +347,14 @@ async def health_check():
     processed = alert_queue.processed_count if alert_queue else 0
 
     overall = "healthy"
-    if claude_status == "unreachable":
+    if llm_status == "unreachable":
         overall = "degraded"
     if alert_queue is None:
         overall = "unhealthy"
 
     return HealthResponse(
         status=overall,
-        claude_api=claude_status,
+        claude_api=llm_status,
         prometheus=prometheus_status,
         queue_depth=queue_depth,
         active_workers=active_workers,
