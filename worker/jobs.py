@@ -31,6 +31,12 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
 
     session_factory = AsyncSessionLocal
 
+    try:
+        from agent.metrics import active_incidents
+        active_incidents.inc()
+    except Exception:
+        pass
+
     async with session_factory() as session:
         # Persist the incident row (PENDING → PROCESSING)
         await create_incident(session, {
@@ -76,6 +82,27 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
         })
 
     await publish_incident_update(ctx["redis"], incident_id, final_status)
+
+    # Record Prometheus metrics
+    try:
+        from datetime import datetime, timezone
+        from agent.metrics import record_incident, active_incidents
+        started_str = report.get("started_at") or _iso_now()
+        resolved_str = report.get("resolved_at") or _iso_now()
+        started_dt = datetime.fromisoformat(started_str.rstrip("Z"))
+        resolved_dt = datetime.fromisoformat(resolved_str.rstrip("Z"))
+        duration = (resolved_dt - started_dt).total_seconds()
+        record_incident(
+            status=final_status,
+            alert_name=alert.get("labels", {}).get("alertname", "Unknown"),
+            duration_seconds=max(duration, 0),
+            actions=report.get("actions_taken", []),
+            tokens_used=report.get("llm_tokens_used", 0),
+            model=report.get("llm_model", "unknown"),
+        )
+        active_incidents.dec()
+    except Exception as exc:
+        logger.warning(f"[{incident_id}] Failed to record metrics: {exc}")
 
     # Auto-generate PIR for resolved incidents
     if final_status == "RESOLVED":

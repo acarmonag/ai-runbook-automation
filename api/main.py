@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Path, Body, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -136,17 +137,23 @@ async def receive_webhook(
             "generatorURL": alert.generatorURL,
         }
 
-        incident_id = await alert_queue.enqueue(alert_dict)
-        if incident_id:
-            # Pre-create the incident row so it's visible immediately
+        result = await alert_queue.enqueue(alert_dict)
+        if result is None:
+            continue
+
+        incident_id, is_new = result
+        incident_ids.append(incident_id)
+
+        if is_new:
+            # Pre-create the incident row so it's visible immediately.
             await create_incident(session, {
                 "incident_id": incident_id,
                 "alert_name": alert.labels.alertname,
                 "alert": alert_dict,
                 "status": "PENDING",
             })
-            incident_ids.append(incident_id)
             queued += 1
+        # Correlated alerts are silently merged — no new row or job.
 
     return WebhookResponse(
         message=f"Queued {queued} alert(s) for processing",
@@ -235,6 +242,23 @@ async def reject_action(
 async def get_stats(session: AsyncSession = Depends(get_session)):
     """MTTR and SLO stats for the dashboard."""
     return await get_mttr_stats(session)
+
+
+@app.get("/correlations")
+async def list_correlations():
+    """Active alert correlation groups — useful for observability/debugging."""
+    groups = await alert_queue._correlator.active_groups()
+    return {"active_groups": groups, "count": len(groups)}
+
+
+# ─── Prometheus Metrics ───────────────────────────────────────────────────────
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Expose Prometheus metrics for scraping."""
+    from agent.metrics import metrics_output
+    body, content_type = metrics_output()
+    return Response(content=body, media_type=content_type)
 
 
 # ─── Runbook Endpoints ────────────────────────────────────────────────────────
