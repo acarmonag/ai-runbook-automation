@@ -18,6 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY agent/ ./agent/
 COPY api/ ./api/
+COPY db/ ./db/
+COPY worker/ ./worker/
 COPY runbooks/ ./runbooks/
 
 # Create data directory

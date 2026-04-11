@@ -22,7 +22,7 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
     to Redis pub/sub as the incident progresses.
     """
     from db.database import AsyncSessionLocal
-    from db.incident_store import create_incident, update_incident
+    from db.incident_store import create_incident, update_incident, get_incident
     from agent.actions.registry import build_default_registry
     from agent.agent import SREAgent
     from agent.approval_gate import ApprovalGate
@@ -38,13 +38,17 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
         pass
 
     async with session_factory() as session:
-        # Persist the incident row (PENDING → PROCESSING)
-        await create_incident(session, {
-            "incident_id": incident_id,
-            "alert_name": alert.get("labels", {}).get("alertname", "Unknown"),
-            "alert": alert,
-            "status": "PROCESSING",
-        })
+        # Row may already exist (created by API on enqueue) — upsert to PROCESSING.
+        existing = await get_incident(session, incident_id)
+        if existing:
+            await update_incident(session, incident_id, {"status": "PROCESSING"})
+        else:
+            await create_incident(session, {
+                "incident_id": incident_id,
+                "alert_name": alert.get("labels", {}).get("alertname", "Unknown"),
+                "alert": alert,
+                "status": "PROCESSING",
+            })
         await publish_incident_update(ctx["redis"], incident_id, "PROCESSING")
 
     # Build agent
