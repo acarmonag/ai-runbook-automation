@@ -314,6 +314,88 @@ async def get_runbook_endpoint(name: str = Path(...)):
     }
 
 
+@app.get("/runbooks/{name}/yaml")
+async def get_runbook_yaml(name: str = Path(...)):
+    """Return raw YAML content for the runbook editor."""
+    import re
+    runbooks_dir = os.path.join(os.getcwd(), "runbooks")
+    # Find the file by name or stem
+    for fname in os.listdir(runbooks_dir) if os.path.isdir(runbooks_dir) else []:
+        if fname.endswith(".yml"):
+            path = os.path.join(runbooks_dir, fname)
+            try:
+                import yaml as _yaml
+                with open(path) as f:
+                    data = _yaml.safe_load(f)
+                if data and data.get("name") == name:
+                    with open(path) as f:
+                        raw = f.read()
+                    return Response(content=raw, media_type="text/plain")
+            except Exception:
+                continue
+    raise HTTPException(status_code=404, detail=f"Runbook '{name}' not found")
+
+
+@app.put("/runbooks/{name}")
+async def update_runbook(
+    name: str = Path(...),
+    body: dict[str, Any] = Body(...),
+):
+    """
+    Update a runbook's YAML file.
+    Body: { yaml: "<yaml string>" }
+    """
+    import yaml as _yaml
+    raw_yaml = body.get("yaml", "")
+    if not raw_yaml:
+        raise HTTPException(status_code=422, detail="yaml field is required")
+
+    # Validate YAML + require name field
+    try:
+        parsed = _yaml.safe_load(raw_yaml)
+    except _yaml.YAMLError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid YAML: {exc}")
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="YAML must be a mapping")
+
+    if parsed.get("name") != name:
+        raise HTTPException(
+            status_code=422,
+            detail=f"YAML 'name' field must match URL ({name})",
+        )
+
+    runbooks_dir = os.path.join(os.getcwd(), "runbooks")
+    if not os.path.isdir(runbooks_dir):
+        raise HTTPException(status_code=500, detail="Runbooks directory not found")
+
+    # Find existing file or use name as stem
+    target_path: str | None = None
+    for fname in os.listdir(runbooks_dir):
+        if fname.endswith(".yml"):
+            path = os.path.join(runbooks_dir, fname)
+            try:
+                with open(path) as f:
+                    data = _yaml.safe_load(f)
+                if data and data.get("name") == name:
+                    target_path = path
+                    break
+            except Exception:
+                continue
+
+    if target_path is None:
+        target_path = os.path.join(runbooks_dir, f"{name.lower().replace(' ', '_')}.yml")
+
+    try:
+        with open(target_path, "w") as f:
+            f.write(raw_yaml)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to write runbook: {exc}")
+
+    logger.info("Runbook '%s' updated via API", name)
+    return {"updated": name, "path": os.path.basename(target_path)}
+
+
 # ─── Simulate Endpoint ────────────────────────────────────────────────────────
 
 @app.post("/simulate", response_model=WebhookResponse)
