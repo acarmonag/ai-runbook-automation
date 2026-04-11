@@ -22,8 +22,8 @@ COPY db/ ./db/
 COPY worker/ ./worker/
 COPY runbooks/ ./runbooks/
 
-# Create data directory
-RUN mkdir -p /data && chown agent:agent /data
+# Create data directory and make runbooks writable (API can create/update runbooks)
+RUN mkdir -p /data && chown agent:agent /data && chown -R agent:agent /app/runbooks
 
 # Switch to non-root user
 USER agent

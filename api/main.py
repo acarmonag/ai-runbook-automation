@@ -336,6 +336,63 @@ async def get_runbook_yaml(name: str = Path(...)):
     raise HTTPException(status_code=404, detail=f"Runbook '{name}' not found")
 
 
+@app.post("/runbooks")
+async def create_runbook(body: dict[str, Any] = Body(...)):
+    """
+    Create a new runbook YAML file.
+    Body: { yaml: "<yaml string>" }
+    The 'name' field inside the YAML determines the filename.
+    Returns 409 if a runbook with that name already exists.
+    """
+    import yaml as _yaml
+    raw_yaml = body.get("yaml", "")
+    if not raw_yaml:
+        raise HTTPException(status_code=422, detail="yaml field is required")
+
+    try:
+        parsed = _yaml.safe_load(raw_yaml)
+    except _yaml.YAMLError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid YAML: {exc}")
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="YAML must be a mapping")
+
+    name = parsed.get("name", "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="YAML must include a 'name' field")
+
+    runbooks_dir = os.path.join(os.getcwd(), "runbooks")
+    if not os.path.isdir(runbooks_dir):
+        raise HTTPException(status_code=500, detail="Runbooks directory not found")
+
+    # Reject if a runbook with this name already exists
+    for fname in os.listdir(runbooks_dir):
+        if fname.endswith(".yml"):
+            path = os.path.join(runbooks_dir, fname)
+            try:
+                with open(path) as f:
+                    data = _yaml.safe_load(f)
+                if data and data.get("name") == name:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Runbook '{name}' already exists — use PUT to update it",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                continue
+
+    target_path = os.path.join(runbooks_dir, f"{name.lower().replace(' ', '_')}.yml")
+    try:
+        with open(target_path, "w") as f:
+            f.write(raw_yaml)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to write runbook: {exc}")
+
+    logger.info("Runbook '%s' created via API", name)
+    return {"created": name, "path": os.path.basename(target_path)}
+
+
 @app.put("/runbooks/{name}")
 async def update_runbook(
     name: str = Path(...),
