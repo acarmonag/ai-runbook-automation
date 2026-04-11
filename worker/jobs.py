@@ -82,7 +82,7 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
             "reasoning_transcript": report.get("reasoning_transcript", []),
             "state_history": report.get("state_history", []),
             "full_agent_response": report.get("full_agent_response"),
-            "resolved_at": _iso_now() if final_status in ("RESOLVED", "ESCALATED") else None,
+            "resolved_at": _now_dt() if final_status in ("RESOLVED", "ESCALATED") else None,
         })
 
     await publish_incident_update(ctx["redis"], incident_id, final_status)
@@ -120,3 +120,8 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
 def _iso_now() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
+
+
+def _now_dt():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
