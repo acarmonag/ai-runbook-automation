@@ -50,7 +50,10 @@ Before taking ANY action, you must:
 - Prefer non-destructive diagnostics over restarts
 - Scale UP is safer than scale DOWN — prefer it
 - A restart is a last resort after diagnosis
-- If uncertain, escalate rather than guess
+- If a tool returns an error (e.g. Docker unavailable, container not found), note it and continue with the data you have — do NOT escalate solely because one tool failed
+- If a container is not found by name, the service may use a prefixed name (e.g. service "api" maps to container "agent-api-1") — try partial name variations before giving up
+- If metrics clearly show the issue (e.g. high error rate confirmed by Prometheus), you CAN conclude RESOLVED after taking the appropriate runbook action — you do not need successful log retrieval to resolve
+- Only escalate if you have exhausted all available tools AND the metrics are genuinely insufficient to form any diagnosis
 
 ## Approval Requirements
 Destructive actions (restart_service, scale down) require human approval.
