@@ -1,0 +1,19 @@
+{
+  "version": "4",
+  "status": "firing",
+  "receiver": "test",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "HighErrorRate",
+        "service": "api",
+        "severity": "critical"
+      },
+      "annotations": {
+        "summary": "Error rate above 5%"
+      },
+      "startsAt": "2026-04-11T00:00:00Z"
+    }
+  ]
+}
