@@ -429,11 +429,17 @@ End your response with a structured JSON incident report in a ```json code block
         state_machine: IncidentStateMachine,
     ) -> dict:
         structured = self._extract_json_report(final_text)
+
+        # Derive outcome: prefer parsed report, then check if escalate was called,
+        # then fall back to RESOLVED.
+        escalated = any(a.get("action") == "escalate" for a in actions_taken)
+        outcome = structured.get("outcome") or ("ESCALATED" if escalated else "RESOLVED")
+
         return {
             "incident_id": incident_id,
             "alert_name": alert.get("labels", {}).get("alertname", "Unknown"),
             "alert": alert,
-            "status": structured.get("outcome", "RESOLVED"),
+            "status": outcome,
             "summary": structured.get("summary", final_text[:200]),
             "root_cause": structured.get("root_cause", ""),
             "actions_taken": actions_taken,
@@ -490,9 +496,34 @@ End your response with a structured JSON incident report in a ```json code block
 
     def _extract_json_report(self, text: str) -> dict:
         import re
+
+        # 1. Try ```json ... ``` code block
         for match in re.findall(r"```json\s*(.*?)\s*```", text, re.DOTALL):
             try:
                 return json.loads(match)
             except json.JSONDecodeError:
                 continue
+
+        # 2. Try <incident_report>...</incident_report> XML
+        xml_match = re.search(r"<incident_report>(.*?)</incident_report>", text, re.DOTALL | re.IGNORECASE)
+        if xml_match:
+            xml = xml_match.group(0)
+
+            def _field(tag: str) -> str:
+                m = re.search(rf"<{tag}>(.*?)</{tag}>", xml, re.DOTALL | re.IGNORECASE)
+                return m.group(1).strip() if m else ""
+
+            def _list(container: str, item: str) -> list[str]:
+                c = re.search(rf"<{container}>(.*?)</{container}>", xml, re.DOTALL | re.IGNORECASE)
+                if not c:
+                    return []
+                return [m.group(1).strip() for m in re.finditer(rf"<{item}>(.*?)</{item}>", c.group(1), re.DOTALL | re.IGNORECASE)]
+
+            return {
+                "outcome": _field("outcome") or None,
+                "summary": _field("summary") or None,
+                "root_cause": _field("root_cause") or None,
+                "recommendations": _list("recommendations", "recommendation"),
+            }
+
         return {}
