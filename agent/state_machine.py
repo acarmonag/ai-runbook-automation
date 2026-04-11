@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-INCIDENTS_FILE = os.environ.get("INCIDENTS_FILE", "incidents.jsonl")
+INCIDENTS_FILE = os.environ.get("INCIDENTS_FILE", "/tmp/incidents.jsonl")
 
 
 class IncidentState(str, Enum):
