@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import os
 
-from fastapi import Request, HTTPException
+from fastapi import HTTPException
+from starlette.requests import HTTPConnection  # works for both HTTP and WebSocket
 
 _API_KEY = os.environ.get("API_KEY", "").strip()
 
@@ -25,18 +26,21 @@ _API_KEY = os.environ.get("API_KEY", "").strip()
 _PUBLIC_PATHS = {"/health", "/metrics", "/docs", "/openapi.json", "/redoc"}
 
 
-async def require_api_key(request: Request) -> None:
-    """FastAPI dependency — raises 401 if auth is enabled and key is invalid."""
+async def require_api_key(conn: HTTPConnection) -> None:
+    """FastAPI dependency — raises 401 if auth is enabled and key is invalid.
+
+    Uses HTTPConnection (base class of both Request and WebSocket) so it works
+    as a global dependency for both HTTP routes and WebSocket endpoints.
+    """
     if not _API_KEY:
         return  # Auth disabled
 
-    if request.url.path in _PUBLIC_PATHS:
+    if conn.url.path in _PUBLIC_PATHS:
         return
 
-    # WebSocket upgrade requests carry the key as a query param
     provided = (
-        request.headers.get("X-API-Key")
-        or request.query_params.get("api_key")
+        conn.headers.get("X-API-Key")
+        or conn.query_params.get("api_key")
     )
 
     if provided != _API_KEY:
