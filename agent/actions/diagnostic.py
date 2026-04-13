@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Diagnostic actions — predefined system health checks.
 """
@@ -23,12 +25,14 @@ def run_diagnostic(check: str) -> dict[str, Any]:
     - memory_pressure: Check available memory
     - connection_count: Check open connections
     - error_rate: Query Prometheus for current error rate
+    - alert_status: Check whether the alert is still firing (post-remediation)
     """
     dispatch = {
         "disk_usage": _check_disk_usage,
         "memory_pressure": _check_memory_pressure,
         "connection_count": _check_connection_count,
         "error_rate": _check_error_rate,
+        "alert_status": _check_alert_status,
     }
 
     handler = dispatch.get(check)
@@ -191,3 +195,39 @@ def _check_error_rate() -> dict[str, Any]:
         }
     except Exception as e:
         return {"check": "error_rate", "error": str(e), "status": "error"}
+
+
+def _check_alert_status() -> dict[str, Any]:
+    """
+    Check whether the current alert is still firing by querying mock Prometheus.
+    Use this AFTER performing a remediation action to verify the alert resolved.
+    """
+    try:
+        response = httpx.get(
+            f"{PROMETHEUS_URL}/api/v1/alert-status",
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        firing = data.get("alert_firing", True)
+        phase = data.get("phase", "UNKNOWN")
+
+        return {
+            "check": "alert_status",
+            "status": "firing" if firing else "resolved",
+            "alert_firing": firing,
+            "scenario_phase": phase,
+            "message": data.get("message", ""),
+            "recommendation": "Alert is still active — further investigation needed" if firing
+                              else "Alert resolved — remediation was successful",
+        }
+
+    except httpx.ConnectError:
+        return {
+            "check": "alert_status",
+            "status": "error",
+            "error": f"Cannot connect to Prometheus at {PROMETHEUS_URL}",
+        }
+    except Exception as e:
+        return {"check": "alert_status", "error": str(e), "status": "error"}

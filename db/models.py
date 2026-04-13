@@ -6,7 +6,7 @@ serialisation transparently.
 """
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import DateTime, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
@@ -24,26 +24,26 @@ class Incident(Base):
 
     incident_id: Mapped[str] = mapped_column(String(16), primary_key=True)
     alert_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    alert: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    alert: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="PENDING")
-    summary: Mapped[str | None] = mapped_column(Text)
-    root_cause: Mapped[str | None] = mapped_column(Text)
-    actions_taken: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
-    recommendations: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    reasoning_transcript: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
-    state_history: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
-    pending_action: Mapped[str | None] = mapped_column(String(255))
-    approval_state: Mapped[str | None] = mapped_column(String(50))
+    summary: Mapped[Optional[str]] = mapped_column(Text)
+    root_cause: Mapped[Optional[str]] = mapped_column(Text)
+    actions_taken: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    recommendations: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    reasoning_transcript: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    state_history: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    pending_action: Mapped[Optional[str]] = mapped_column(String(255))
+    approval_state: Mapped[Optional[str]] = mapped_column(String(50))
     # PIR auto-generated after resolution
-    pir: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    pir: Mapped[Optional[dict]] = mapped_column(JSONB)
     # LLM usage tracking
-    llm_tokens_used: Mapped[int | None] = mapped_column()
-    llm_model: Mapped[str | None] = mapped_column(String(100))
+    llm_tokens_used: Mapped[Optional[int]] = mapped_column()
+    llm_model: Mapped[Optional[str]] = mapped_column(String(100))
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    full_agent_response: Mapped[str | None] = mapped_column(Text)
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    full_agent_response: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -51,7 +51,7 @@ class Incident(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict:
         return {
             "incident_id": self.incident_id,
             "alert_name": self.alert_name,

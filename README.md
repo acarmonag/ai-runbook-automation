@@ -572,6 +572,7 @@ If neither is set, escalations are logged locally to `/tmp/escalations.jsonl` in
 | `PAGERDUTY_ROUTING_KEY` | *(unset)* | PagerDuty Events v2 routing key for escalations |
 | `API_KEY` | *(unset)* | When set, requires `X-API-Key: <value>` on all requests |
 | `MOCK_SCENARIO` | `high_error_rate` | Scenario served by mock-prometheus |
+| `COMPOSE_PROJECT_NAME` | *(directory name)* | Docker Compose project prefix for container name resolution |
 
 ---
 
@@ -645,11 +646,106 @@ ai-runbook-automation/
 
 ---
 
+## Development & Testing
+
+### Running Tests Without Docker
+
+All unit tests mock external dependencies (Docker, Redis, PostgreSQL) and run without any services:
+
+```bash
+# Install Python dependencies
+pip install -r requirements.txt
+
+# Unit tests only (no Docker required)
+make test-unit
+
+# Full test suite (requires running services for API integration tests)
+make test
+
+# With coverage report
+make test-cov
+```
+
+**Test suite layout:**
+
+| File | What it covers |
+|------|----------------|
+| `tests/test_agent.py` | SRE agent loop, approval gate, action registry |
+| `tests/test_actions.py` | Docker actions, log tailing, service status |
+| `tests/test_correlation.py` | Alert dedup via Redis SET NX / TTL |
+| `tests/test_db.py` | Incident CRUD, MTTR stats (mocked SQLAlchemy) |
+| `tests/test_worker.py` | ARQ job lifecycle, PIR generation |
+| `tests/test_service_resolver.py` | Docker container name resolution |
+| `tests/test_api.py` | FastAPI endpoints (requires running services) |
+| `tests/test_llm_backends.py` | Ollama + Claude adapter contracts |
+
+### Local Dev (UI hot-reload + Docker backend)
+
+```bash
+# 1. Copy env
+cp .env.example .env
+
+# 2. Start backend services only (PostgreSQL, Redis, worker, Prometheus)
+make up
+
+# 3. Start Vite dev server with hot-reload
+make ui-dev        # → http://localhost:3000
+```
+
+### Python Compatibility
+
+The codebase requires **Python 3.9+**. All files use `from __future__ import annotations`
+for deferred evaluation of type hints. The exception is `db/models.py` — SQLAlchemy 2.x
+evaluates `Mapped[]` annotations at import time, so `Optional[X]` is used directly there
+instead of `X | None`.
+
+---
+
+## Troubleshooting
+
+### Agent worker shows "LLM unreachable" in logs
+
+1. Check Ollama is running on the host: `ollama ps`
+2. Verify `OLLAMA_BASE_URL=http://host.docker.internal:11434` in `.env`
+3. Pull the model if missing: `ollama pull qwen3:14b`
+4. Switch to Claude: set `LLM_BACKEND=claude` and provide `ANTHROPIC_API_KEY`
+
+### Database migration errors on first start
+
+The `api` service runs `alembic upgrade head` on startup. If it fails:
+
+```bash
+make logs          # check alembic output
+make reset         # drop volumes and restart clean
+```
+
+### Alert webhook returns 422
+
+Alertmanager payload must include a `labels.alertname` field. Test with:
+
+```bash
+make fire-alert
+```
+
+### UI shows blank incident list
+
+- Check `VITE_API_URL` in `ui/.env` (defaults to `http://localhost:8000`)
+- Confirm the `api` container is healthy: `docker ps`
+- WebSocket updates require the `api` service — no polling fallback
+
+### Docker container not found errors in agent
+
+The agent resolves logical service names (e.g. `api`) to Docker container names
+(e.g. `ai-runbook-automation-api-1`). Override with `COMPOSE_PROJECT_NAME` in `.env`
+if your project directory name differs from `ai-runbook-automation`.
+
+---
+
 ## Security Notes
 
 - `ANTHROPIC_API_KEY` is **never** hardcoded — always injected via environment variable
 - Docker images run as non-root users
-- Destructive actions require human approval in AUTO mode
+- All actions in AUTO mode are pre-approved for unattended operation; use MANUAL mode for human-in-the-loop
 - DRY_RUN mode is always safe — zero side effects
 - API key auth available via `API_KEY` env var (`/health` and `/metrics` bypass auth for scraping)
 - Escalation webhooks use HTTPS

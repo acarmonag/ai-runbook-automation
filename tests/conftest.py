@@ -130,12 +130,32 @@ def mock_llm_simple_resolution():
             },
         ),
         LLMResponse(
-            stop_reason="end_turn",
-            tool_calls=[],
-            text=_final_resolution_text(),
+            stop_reason="tool_use",
+            tool_calls=[ToolCall(
+                id="t002",
+                name="complete_incident",
+                input={
+                    "incident_id": "test-001",
+                    "summary": "High error rate detected and resolved",
+                    "root_cause": "Temporary spike in database connection errors, self-resolved",
+                    "outcome": "RESOLVED",
+                    "recommendations": ["Monitor database connection pool size"],
+                },
+            )],
+            text="Metrics look normal. Marking incident resolved.",
             raw_assistant_message={
                 "role": "assistant",
-                "content": [{"type": "text", "text": _final_resolution_text()}],
+                "content": [
+                    {"type": "text", "text": "Metrics look normal. Marking incident resolved."},
+                    {"type": "tool_use", "id": "t002", "name": "complete_incident",
+                     "input": {
+                         "incident_id": "test-001",
+                         "summary": "High error rate detected and resolved",
+                         "root_cause": "Temporary spike in database connection errors, self-resolved",
+                         "outcome": "RESOLVED",
+                         "recommendations": ["Monitor database connection pool size"],
+                     }},
+                ],
             },
         ),
     ]

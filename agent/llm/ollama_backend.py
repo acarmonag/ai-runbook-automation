@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Ollama backend — uses the OpenAI-compatible API served by Ollama.
 

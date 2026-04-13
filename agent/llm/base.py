@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Shared types for the LLM abstraction layer.
 

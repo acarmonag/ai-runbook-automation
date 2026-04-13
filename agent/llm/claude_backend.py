@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Claude API backend — uses the Anthropic SDK.
 

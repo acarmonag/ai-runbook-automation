@@ -7,8 +7,13 @@ data into a structured review document and persists it to PostgreSQL.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
+
+from agent.llm.factory import create_backend
+from db.database import AsyncSessionLocal
+from db.incident_store import update_incident
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +39,6 @@ Incident data:
 
 async def generate_pir(incident_id: str, report: dict[str, Any]) -> None:
     """Generate and persist a PIR for a resolved incident."""
-    import json
-    from agent.llm.factory import create_backend
-    from db.database import AsyncSessionLocal
-    from db.incident_store import update_incident
-
     try:
         backend = create_backend()
         prompt = PIR_PROMPT.format(

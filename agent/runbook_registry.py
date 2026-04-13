@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Runbook registry — loads runbook definitions from YAML files
 and maps alert names to runbooks.
@@ -22,6 +24,7 @@ class Runbook:
     actions: list[str]
     escalation_threshold: str = ""
     metadata: dict = field(default_factory=dict)
+    verification: dict = field(default_factory=dict)
 
 
 class RunbookRegistry:
@@ -64,6 +67,7 @@ class RunbookRegistry:
             actions=data.get("actions", []),
             escalation_threshold=data.get("escalation_threshold", ""),
             metadata=data.get("metadata", {}),
+            verification=data.get("verification", {}),
         )
 
         self._runbooks[runbook.name] = runbook

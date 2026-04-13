@@ -183,10 +183,10 @@ class TestApprovalGate:
         with patch("builtins.input", return_value="y"):
             assert gate.approve("restart_service", {"service": "api"}) is True
 
-    def test_auto_rejects_when_denied(self):
+    def test_auto_approves_destructive_without_prompt(self):
+        # AUTO mode pre-approves all actions — no stdin prompt, no rejection
         gate = ApprovalGate(mode=ApprovalMode.AUTO)
-        with patch("builtins.input", return_value="n"):
-            assert gate.approve("restart_service", {"service": "api"}) is False
+        assert gate.approve("restart_service", {"service": "api"}) is True
 
     def test_auto_approves_scale_up(self):
         gate = ApprovalGate(mode=ApprovalMode.AUTO)
@@ -202,10 +202,11 @@ class TestApprovalGate:
         with patch("builtins.input", return_value="y"):
             assert gate.approve("get_metrics", {"query": "test"}) is True
 
-    def test_eof_rejects(self):
+    def test_auto_approves_even_without_stdin(self):
+        # AUTO mode never calls input() — runs unattended in containers
         gate = ApprovalGate(mode=ApprovalMode.AUTO)
         with patch("builtins.input", side_effect=EOFError):
-            assert gate.approve("restart_service", {"service": "api"}) is False
+            assert gate.approve("restart_service", {"service": "api"}) is True
 
 
 # ─── Action Registry Tests ────────────────────────────────────────────────────
@@ -341,16 +342,17 @@ class TestSREAgent:
 
         assert len(executed_restarts) == 0  # DRY_RUN intercepted before handler
 
-    def test_auto_mode_rejection_recorded(self, alert_high_error_rate, mock_llm_with_restart):
-        """In AUTO mode, a rejected restart should appear in actions_taken."""
+    def test_auto_mode_approves_restart(self, alert_high_error_rate, mock_llm_with_restart):
+        """In AUTO mode, restart_service is pre-approved and executed (no REJECTED entries)."""
         agent, mock_llm = self._make_agent(approval_mode=ApprovalMode.AUTO)
         mock_llm.chat.side_effect = mock_llm_with_restart
 
-        with patch("builtins.input", return_value="n"):
-            report = agent.run(alert_high_error_rate)
+        report = agent.run(alert_high_error_rate)
 
+        restart_actions = [a for a in report["actions_taken"] if a.get("action") == "restart_service"]
+        assert len(restart_actions) > 0
         rejected = [a for a in report["actions_taken"] if a.get("result") == "REJECTED"]
-        assert len(rejected) > 0
+        assert len(rejected) == 0
 
     def test_runbook_context_loaded(self, alert_high_error_rate, mock_llm_simple_resolution):
         from agent.runbook_registry import Runbook

@@ -1,10 +1,11 @@
 import { clsx } from "clsx";
 import type { TranscriptMessage, ContentBlock } from "@/types/incident";
 import { ToolCallBlock, ToolResultBlock } from "./ToolCallBlock";
+import { Markdown } from "./Markdown";
 
 // ── Incident report extraction ────────────────────────────────────────────────
 
-interface ParsedReport {
+export interface ParsedReport {
   summary?: string;
   root_cause?: string;
   outcome?: string;
@@ -12,7 +13,7 @@ interface ParsedReport {
   recommendations?: string[];
 }
 
-function extractReport(text: string): { prose: string; thinking: string; report: ParsedReport | null } {
+export function extractReport(text: string): { prose: string; thinking: string; report: ParsedReport | null } {
   // Strip <think>...</think> blocks (qwen3 internal reasoning)
   let thinking = "";
   let remaining = text.replace(/<think>([\s\S]*?)<\/think>/gi, (_, inner) => {
@@ -74,7 +75,7 @@ const outcomeStyle: Record<string, string> = {
   FAILED:    "border-red-700 bg-red-950/40 text-red-300",
 };
 
-function FinalReportCard({ report }: { report: ParsedReport }) {
+export function FinalReportCard({ report }: { report: ParsedReport }) {
   const outcome = report.outcome?.toUpperCase() ?? "UNKNOWN";
   const style = outcomeStyle[outcome] ?? "border-zinc-700 bg-zinc-800/40 text-zinc-300";
 
@@ -123,7 +124,7 @@ function FinalReportCard({ report }: { report: ParsedReport }) {
             <ul className="space-y-1">
               {report.recommendations.map((r, i) => (
                 <li key={i} className="flex gap-2 text-xs text-zinc-400">
-                  <span className="text-emerald-600">✓</span>
+                  <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-600" />
                   {r}
                 </li>
               ))}
@@ -139,7 +140,7 @@ function FinalReportCard({ report }: { report: ParsedReport }) {
 
 function renderTextContent(text: string, role: string) {
   if (role !== "assistant") {
-    return <p className="whitespace-pre-wrap text-sm text-zinc-300">{text}</p>;
+    return <Markdown text={text} className="text-zinc-300" />;
   }
 
   const { prose, thinking, report } = extractReport(text);
@@ -152,16 +153,14 @@ function renderTextContent(text: string, role: string) {
           <summary className="cursor-pointer px-3 py-1.5 text-xs text-zinc-500 hover:text-zinc-400 select-none">
             Model thinking…
           </summary>
-          <p className="px-3 pb-2 whitespace-pre-wrap text-xs text-zinc-500 border-t border-zinc-700/40 pt-2">
-            {thinking}
-          </p>
+          <div className="px-3 pb-2 border-t border-zinc-700/40 pt-2">
+            <Markdown text={thinking} className="text-zinc-600 text-xs" />
+          </div>
         </details>
       )}
 
-      {/* prose text */}
-      {prose && (
-        <p className="whitespace-pre-wrap text-sm text-zinc-300">{prose}</p>
-      )}
+      {/* prose text — rendered as markdown */}
+      {prose && <Markdown text={prose} />}
 
       {/* structured report */}
       {report && <FinalReportCard report={report} />}
@@ -206,7 +205,7 @@ export function MessageBubble({ message }: { message: TranscriptMessage }) {
           isAssistant ? "bg-violet-800 text-violet-200" : "bg-zinc-700 text-zinc-300",
         )}
       >
-        {isAssistant ? "AI" : "→"}
+        {isAssistant ? "AI" : "U"}
       </div>
 
       <div

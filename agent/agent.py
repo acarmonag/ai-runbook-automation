@@ -9,12 +9,14 @@ Switch backends via LLM_BACKEND env var:
   LLM_BACKEND=claude   (Anthropic API — requires ANTHROPIC_API_KEY)
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from agent.actions.registry import ActionRegistry, ActionResult
 from agent.approval_gate import ApprovalGate
@@ -28,51 +30,32 @@ logger = logging.getLogger(__name__)
 _LLM_MAX_RETRIES = 3
 _LLM_RETRY_DELAYS = [2, 5, 10]  # seconds between retries
 
-SYSTEM_PROMPT = """You are an autonomous SRE (Site Reliability Engineering) automation agent.
-Your role is to investigate and remediate production incidents with precision and care.
+SYSTEM_PROMPT = """You are an autonomous SRE agent. Investigate and remediate production incidents by calling tools, not by writing instructions.
 
-## Core Responsibilities
-- Investigate alerts by collecting system metrics, logs, and service status
-- Reason systematically about root causes before taking action
-- Execute remediation actions from the approved runbook
-- Verify that remediation was successful
-- Produce clear incident reports explaining what happened and what you did
+RESPONSE FORMAT — CRITICAL
+Write plain prose only. No markdown: no headers, no bold, no bullet lists, no numbered lists, no code blocks, no backticks around commands. Keep any text you write to 1-3 short sentences that state what you observed and what you will do next. Then call the appropriate tool immediately. Never write shell commands or docker commands — use the provided tools instead.
 
-## Reasoning Protocol
-Before taking ANY action, you must:
-1. State what you observe from the current system state
-2. Explain your hypothesis about the root cause
-3. Describe the action you plan to take and why
-4. Predict the expected outcome
+WORKFLOW
+Observe: call get_metrics, get_recent_logs, get_service_status to collect data.
+Reason: one sentence stating the likely root cause based on what you observed.
+Act: call the appropriate tool (restart_service, scale_service, run_diagnostic, escalate).
+Verify: after any remediation, call get_metrics and run_diagnostic with check=alert_status.
+Report: call complete_incident with the structured report. Never write the report as text.
 
-## Action Guidelines
-- Always collect data BEFORE making changes
-- Prefer non-destructive diagnostics over restarts
-- Scale UP is safer than scale DOWN — prefer it
-- A restart is a last resort after diagnosis
-- If a tool returns an error (e.g. Docker unavailable, container not found), note it and continue with the data you have — do NOT escalate solely because one tool failed
-- If a container is not found by name, the service may use a prefixed name (e.g. service "api" maps to container "agent-api-1") — try partial name variations before giving up
-- If metrics clearly show the issue (e.g. high error rate confirmed by Prometheus), you CAN conclude RESOLVED after taking the appropriate runbook action — you do not need successful log retrieval to resolve
-- Only escalate if you have exhausted all available tools AND the metrics are genuinely insufficient to form any diagnosis
+ACTION RULES
+All actions are pre-approved in AUTO mode. Call tools directly — never ask for permission.
+Always collect data before making changes.
+A restart is correct for: crashes, memory leaks, high error rates, CPU spikes.
+If a tool returns an error, note it briefly and continue — do not escalate on a single tool failure.
+After restart_service or scale_service, always re-check metrics and run alert_status diagnostic.
 
-## Approval Requirements
-Destructive actions (restart_service, scale down) require human approval.
-You will be informed if an action is pending approval. Do not proceed until approved.
+RESOLUTION — declare RESOLVED when after remediation any of these is true:
+run_diagnostic alert_status returns alert_firing false, error rate below 1%, latency below 1s, memory below 500MB, CPU below 50%.
 
-## Verification
-After every remediation action, verify the outcome by:
-- Re-querying the relevant metrics
-- Checking service health status
-- Confirming the alert condition has resolved
+ESCALATION — only if all of these are true:
+At least 3 diagnostic tools have been called, remediation failed or was rejected, no improvement in metrics, root cause cannot be determined.
 
-## Output Format
-Always end your investigation with a structured incident report containing:
-- incident_id: the ID provided to you
-- summary: one-sentence description of what happened
-- root_cause: your assessment of the root cause
-- actions_taken: list of actions you executed
-- outcome: RESOLVED, ESCALATED, or FAILED
-- recommendations: any follow-up actions for the team
+FINISHING — call complete_incident when done. This is mandatory.
 """
 
 TOOL_DEFINITIONS = [
@@ -158,14 +141,14 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "run_diagnostic",
-        "description": "Run a predefined diagnostic check against the system. Safe, read-only operation.",
+        "description": "Run a predefined diagnostic check against the system. Safe, read-only operation. Use 'alert_status' AFTER every remediation action to verify the alert resolved.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "check": {
                     "type": "string",
                     "description": "The diagnostic check to run",
-                    "enum": ["disk_usage", "memory_pressure", "connection_count", "error_rate"]
+                    "enum": ["disk_usage", "memory_pressure", "connection_count", "error_rate", "alert_status"]
                 }
             },
             "required": ["check"]
@@ -188,6 +171,39 @@ TOOL_DEFINITIONS = [
                 }
             },
             "required": ["reason", "severity"]
+        }
+    },
+    {
+        "name": "complete_incident",
+        "description": "REQUIRED: Call this tool to finalize the incident and submit your investigation report. You MUST call this tool — do not write the report as text. Call this as the very last action after all investigation and verification is complete.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "outcome": {
+                    "type": "string",
+                    "description": "Final outcome of the incident",
+                    "enum": ["RESOLVED", "ESCALATED", "FAILED"]
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "One-sentence summary of what happened and how it was resolved"
+                },
+                "root_cause": {
+                    "type": "string",
+                    "description": "Your diagnosis of the root cause"
+                },
+                "actions_taken": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of actions you executed (e.g. 'Restarted api service to clear connection pool')"
+                },
+                "recommendations": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Follow-up recommendations for the team"
+                }
+            },
+            "required": ["outcome", "summary", "root_cause", "actions_taken", "recommendations"]
         }
     }
 ]
@@ -235,6 +251,17 @@ class SREAgent:
             runbook_context = f"\n\n## Runbook: {runbook.name}\n{runbook.description}\n\nSuggested actions:\n"
             for i, action in enumerate(runbook.actions, 1):
                 runbook_context += f"{i}. {action}\n"
+            if runbook.verification:
+                resolved_when = runbook.verification.get("resolved_when", [])
+                escalate_when = runbook.verification.get("escalate_when", [])
+                if resolved_when:
+                    runbook_context += "\n**Resolution Criteria (declare RESOLVED when any of these is true):**\n"
+                    for criterion in resolved_when:
+                        runbook_context += f"- {criterion}\n"
+                if escalate_when:
+                    runbook_context += "\n**Escalation Criteria:**\n"
+                    for criterion in escalate_when:
+                        runbook_context += f"- {criterion}\n"
         else:
             logger.warning(f"[{incident_id}] No runbook found for alert: {alert_name}")
 
@@ -259,6 +286,7 @@ class SREAgent:
                     incident_id, alert,
                     "LLM unreachable after retries — check Ollama/Claude connectivity",
                     actions_taken,
+                    reasoning_transcript,
                 )
 
             # Record in transcript
@@ -272,6 +300,26 @@ class SREAgent:
             messages.append(response.raw_assistant_message)
 
             if response.stop_reason == "end_turn":
+                # Check if the agent skipped remediation (wrote analysis but didn't act).
+                remediation_actions = {"restart_service", "scale_service", "escalate", "complete_incident"}
+                has_remediated = any(a.get("action") in remediation_actions for a in actions_taken)
+
+                if not has_remediated and iteration <= 3:
+                    # Push the agent to proceed with the runbook action instead of just analyzing.
+                    logger.info(f"[{incident_id}] Agent wrote analysis without acting — pushing to execute runbook")
+                    nudge = (
+                        "You have completed your analysis. Good. Now you MUST proceed with the runbook action. "
+                        "Do not write more analysis — call the appropriate tool to remediate the incident. "
+                        "In AUTO mode all actions are pre-approved. Execute restart_service or scale_service now."
+                    )
+                    messages.append({"role": "user", "content": nudge})
+                    reasoning_transcript.append({
+                        "role": "user",
+                        "content": nudge,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
+                    continue
+
                 logger.info(f"[{incident_id}] Agent completed reasoning")
                 state_machine.transition(IncidentState.RESOLVED)
                 return self._build_final_report(
@@ -283,7 +331,32 @@ class SREAgent:
                 logger.warning(f"[{incident_id}] Unexpected stop: {response.stop_reason}")
                 break
 
-            # ─── Process tool calls ────────────────────────────────────────
+            # ─── Check for complete_incident (terminal tool) ──────────────
+            terminal = next(
+                (tc for tc in response.tool_calls if tc.name == "complete_incident"), None
+            )
+            if terminal:
+                report = terminal.input
+                state_machine.transition(IncidentState.RESOLVED)
+                escalated = any(a.get("action") == "escalate" for a in actions_taken)
+                outcome = report.get("outcome") or ("ESCALATED" if escalated else "RESOLVED")
+                return {
+                    "incident_id": incident_id,
+                    "alert_name": alert.get("labels", {}).get("alertname", "Unknown"),
+                    "alert": alert,
+                    "status": outcome,
+                    "summary": report.get("summary", ""),
+                    "root_cause": report.get("root_cause", ""),
+                    "actions_taken": actions_taken,
+                    "recommendations": report.get("recommendations", []),
+                    "reasoning_transcript": reasoning_transcript,
+                    "state_history": state_machine.get_history(),
+                    "started_at": state_machine.started_at.isoformat(),
+                    "resolved_at": datetime.now(timezone.utc).isoformat(),
+                    "full_agent_response": json.dumps(report),
+                }
+
+            # ─── Process regular tool calls ───────────────────────────────
             tool_results = []
             for tool_call in response.tool_calls:
                 state_machine.transition(IncidentState.ACTING)
@@ -393,24 +466,18 @@ class SREAgent:
     ) -> str:
         labels = alert.get("labels", {})
         annotations = alert.get("annotations", {})
-        return f"""## Incident {incident_id}
-
-**Alert:** {labels.get("alertname", "Unknown")}
-**Severity:** {labels.get("severity", "unknown")}
-**Service:** {labels.get("service", "unknown")}
-**Started At:** {alert.get("startsAt", "unknown")}
-**Summary:** {annotations.get("summary", "No summary available")}
-**Description:** {annotations.get("description", "")}
-
-**Full Alert Labels:**
-{json.dumps(labels, indent=2)}
-
-{runbook_context}
-
-Please investigate this incident. Start by collecting relevant metrics and logs, then reason about the root cause, and execute the appropriate remediation actions. After remediating, verify the fix worked.
-
-End your response with a structured JSON incident report in a ```json code block.
-"""
+        description = annotations.get("description", "").strip()
+        return (
+            f"Incident {incident_id}\n"
+            f"Alert: {labels.get('alertname', 'Unknown')} | "
+            f"Severity: {labels.get('severity', 'unknown')} | "
+            f"Service: {labels.get('service', 'unknown')}\n"
+            f"Summary: {annotations.get('summary', 'No summary available')}\n"
+            + (f"Details: {description}\n" if description else "")
+            + f"\n{runbook_context}\n"
+            "Begin investigation. Call tools to collect data, then remediate. "
+            "All actions are pre-approved. When done call complete_incident."
+        )
 
     def _is_destructive(self, action_name: str, params: dict) -> bool:
         if action_name == "restart_service":
@@ -452,7 +519,8 @@ End your response with a structured JSON incident report in a ```json code block
         }
 
     def _build_error_report(
-        self, incident_id: str, alert: dict, error: str, actions_taken: list
+        self, incident_id: str, alert: dict, error: str, actions_taken: list,
+        reasoning_transcript: Optional[list] = None,
     ) -> dict:
         return {
             "incident_id": incident_id,
@@ -463,7 +531,7 @@ End your response with a structured JSON incident report in a ```json code block
             "root_cause": "Agent runtime error",
             "actions_taken": actions_taken,
             "recommendations": ["Investigate agent error", "Review LLM connectivity"],
-            "reasoning_transcript": [],
+            "reasoning_transcript": reasoning_transcript or [],
             "state_history": [],
             "started_at": datetime.now(timezone.utc).isoformat(),
             "resolved_at": datetime.now(timezone.utc).isoformat(),

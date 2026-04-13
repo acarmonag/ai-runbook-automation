@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 FastAPI application — alert intake, incident API, WebSocket hub, health.
 
@@ -94,9 +96,13 @@ app = FastAPI(
     dependencies=[Depends(require_api_key)],
 )
 
+_cors_origins = [o.strip() for o in os.environ.get(
+    "CORS_ORIGINS", "http://localhost:3000"
+).split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -12,6 +12,15 @@ from typing import Any
 
 from arq.connections import ArqRedis
 
+from db.database import AsyncSessionLocal
+from db.incident_store import create_incident, update_incident, get_incident
+from agent.actions.registry import build_default_registry
+from agent.agent import SREAgent
+from agent.approval_gate import ApprovalGate
+from agent.runbook_registry import RunbookRegistry
+from worker.publisher import publish_incident_update
+from worker.pir import generate_pir
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,14 +30,6 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
     for one alert, writing state to PostgreSQL and publishing changes
     to Redis pub/sub as the incident progresses.
     """
-    from db.database import AsyncSessionLocal
-    from db.incident_store import create_incident, update_incident, get_incident
-    from agent.actions.registry import build_default_registry
-    from agent.agent import SREAgent
-    from agent.approval_gate import ApprovalGate
-    from agent.runbook_registry import RunbookRegistry
-    from worker.publisher import publish_incident_update
-
     session_factory = AsyncSessionLocal
 
     try:
@@ -110,11 +111,42 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
 
     # Auto-generate PIR for resolved incidents
     if final_status == "RESOLVED":
-        from worker.pir import generate_pir
         await generate_pir(incident_id, report)
+
+    # Cleanup: delete correlation key so the next identical alert fires a fresh incident.
+    # Without this, the 300s TTL window prevents re-testing the same scenario.
+    await _delete_correlation_key(alert, ctx["redis"])
+
+    # Reset mock Prometheus scenario state back to INCIDENT for the next test run.
+    await _reset_mock_prometheus()
 
     logger.info(f"[{incident_id}] Job complete: {final_status}")
     return {"incident_id": incident_id, "status": final_status}
+
+
+async def _delete_correlation_key(alert: dict[str, Any], redis_client: Any) -> None:
+    """Remove the correlation dedup key so an identical alert triggers a new incident."""
+    try:
+        labels = alert.get("labels", {})
+        service = (labels.get("service") or labels.get("job") or "unknown").lower()
+        alertname = labels.get("alertname", "unknown").lower()
+        key = f"corr:{service}:{alertname}"
+        await redis_client.delete(key)
+        logger.debug(f"Deleted correlation key: {key}")
+    except Exception as exc:
+        logger.warning(f"Could not delete correlation key: {exc}")
+
+
+async def _reset_mock_prometheus() -> None:
+    """POST to mock Prometheus to reset scenario state to INCIDENT for the next run."""
+    import httpx
+    prometheus_url = os.environ.get("PROMETHEUS_URL", "http://mock-prometheus:9091")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(f"{prometheus_url}/api/v1/reset")
+        logger.debug("Mock Prometheus scenario state reset to INCIDENT")
+    except Exception as exc:
+        logger.debug(f"Could not reset mock Prometheus: {exc}")
 
 
 def _iso_now() -> str:

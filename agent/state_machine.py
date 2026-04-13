@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Incident state machine with structured event emission and persistence.
 

@@ -1,4 +1,5 @@
 import type { PostIncidentReview } from "@/types/incident";
+import { Markdown } from "@/components/transcript/Markdown";
 
 interface PirPanelProps {
   pir: PostIncidentReview;
@@ -25,20 +26,20 @@ export function PirPanel({ pir }: PirPanelProps) {
       {/* Root cause + impact */}
       <section>
         <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-1">Root Cause</h3>
-        <p className="text-zinc-300">{pir.root_cause}</p>
+        <Markdown text={pir.root_cause} />
       </section>
 
       {pir.impact && (
         <section>
           <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-1">Impact</h3>
-          <p className="text-zinc-300">{pir.impact}</p>
+          <Markdown text={pir.impact} />
         </section>
       )}
 
       {pir.resolution && (
         <section>
           <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-1">Resolution</h3>
-          <p className="text-zinc-300">{pir.resolution}</p>
+          <Markdown text={pir.resolution} />
         </section>
       )}
 
@@ -51,7 +52,7 @@ export function PirPanel({ pir }: PirPanelProps) {
           <ul className="space-y-1">
             {pir.contributing_factors.map((f, i) => (
               <li key={i} className="flex gap-2 text-zinc-400">
-                <span className="text-zinc-600">▸</span>
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-600" />
                 <span>{f}</span>
               </li>
             ))}
@@ -104,7 +105,7 @@ export function PirPanel({ pir }: PirPanelProps) {
           <ul className="space-y-1">
             {pir.prevention.map((p, i) => (
               <li key={i} className="flex gap-2 text-zinc-400">
-                <span className="text-emerald-600">✓</span>
+                <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-600" />
                 <span>{p}</span>
               </li>
             ))}

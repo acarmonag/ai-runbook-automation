@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Action registry — maps action names to handler functions and executes them.
 """

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Docker actions — service lifecycle management via Docker SDK.
 """
@@ -7,7 +9,13 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import httpx
+
+from agent.actions.service_resolver import resolve_or_original
+
 logger = logging.getLogger(__name__)
+
+PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://localhost:9091")
 
 # Import Docker SDK lazily to allow testing without Docker installed
 try:
@@ -28,6 +36,28 @@ def _get_docker_client():
         raise RuntimeError(f"Cannot connect to Docker daemon: {e}") from e
 
 
+def _notify_prometheus_remediation(action: str) -> None:
+    """
+    Notify mock Prometheus that a remediation action was performed.
+    This advances the scenario phase so subsequent metric queries return
+    improved (recovering / recovered) values.
+    """
+    try:
+        resp = httpx.post(
+            f"{PROMETHEUS_URL}/api/v1/remediation",
+            json={"action": action},
+            timeout=5.0,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            logger.info(f"Prometheus phase advanced to '{data.get('new_phase')}' after '{action}'")
+        else:
+            logger.warning(f"Prometheus remediation notify returned {resp.status_code}")
+    except Exception as e:
+        # Non-fatal — agent still records the action
+        logger.debug(f"Could not notify Prometheus of remediation: {e}")
+
+
 def get_service_status(service: str) -> dict[str, Any]:
     """
     Get current status of a Docker container/service.
@@ -36,19 +66,20 @@ def get_service_status(service: str) -> dict[str, Any]:
     """
     try:
         client = _get_docker_client()
-        containers = client.containers.list(all=True, filters={"name": service})
+        resolved = resolve_or_original(service, client)
+        containers = client.containers.list(all=True, filters={"name": resolved})
 
         if not containers:
             return {
                 "service": service,
+                "resolved_name": resolved,
                 "status": "not_found",
-                "message": f"No container found with name '{service}'",
+                "message": f"No container found with name '{resolved}' (resolved from '{service}')",
             }
 
         container = containers[0]
         attrs = container.attrs or {}
         state = attrs.get("State", {})
-        host_config = attrs.get("HostConfig", {})
 
         # Calculate uptime
         started_at = state.get("StartedAt", "")
@@ -62,6 +93,7 @@ def get_service_status(service: str) -> dict[str, Any]:
 
         return {
             "service": service,
+            "container_name": container.name,
             "container_id": container.short_id,
             "status": state.get("Status", "unknown"),
             "running": state.get("Running", False),
@@ -84,17 +116,19 @@ def restart_service(service: str) -> dict[str, Any]:
     Restart a Docker container by name.
 
     This is a DESTRUCTIVE action — requires approval in AUTO mode.
+    After a successful restart, notifies mock Prometheus to advance scenario phase.
     """
     logger.warning(f"Restarting service: {service}")
     try:
         client = _get_docker_client()
-        containers = client.containers.list(all=True, filters={"name": service})
+        resolved = resolve_or_original(service, client)
+        containers = client.containers.list(all=True, filters={"name": resolved})
 
         if not containers:
             return {
                 "service": service,
                 "success": False,
-                "error": f"No container found with name '{service}'",
+                "error": f"No container found with name '{resolved}' (resolved from '{service}')",
             }
 
         container = containers[0]
@@ -104,13 +138,18 @@ def restart_service(service: str) -> dict[str, Any]:
         container.reload()
         new_status = container.attrs.get("State", {}).get("Status", "unknown")
 
-        logger.info(f"Service '{service}' restarted, new status: {new_status}")
+        logger.info(f"Service '{service}' (container: {container.name}) restarted, status: {new_status}")
+
+        # Notify Prometheus so metrics reflect post-restart state
+        _notify_prometheus_remediation("restart_service")
+
         return {
             "service": service,
+            "container_name": container.name,
             "success": True,
             "previous_status": "running",
             "new_status": new_status,
-            "message": f"Service {service} successfully restarted",
+            "message": f"Service {service} (container: {container.name}) successfully restarted",
         }
 
     except RuntimeError as e:
@@ -125,6 +164,7 @@ def scale_service(service: str, replicas: int) -> dict[str, Any]:
     Scale a Docker Compose service to the specified replica count.
 
     Scaling DOWN is DESTRUCTIVE — requires approval in AUTO mode.
+    After a successful scale-up, notifies mock Prometheus to advance scenario phase.
     """
     logger.info(f"Scaling service '{service}' to {replicas} replicas")
 
@@ -144,7 +184,6 @@ def scale_service(service: str, replicas: int) -> dict[str, Any]:
         )
         current_count = len(containers)
 
-        # Docker Compose scaling via CLI is more reliable than SDK for this
         import subprocess
         result = subprocess.run(
             ["docker", "compose", "up", "--scale", f"{service}={replicas}", "-d", "--no-recreate"],
@@ -154,7 +193,6 @@ def scale_service(service: str, replicas: int) -> dict[str, Any]:
         )
 
         if result.returncode != 0:
-            # Try without --no-recreate flag
             result = subprocess.run(
                 ["docker", "compose", "up", "--scale", f"{service}={replicas}", "-d"],
                 capture_output=True,
@@ -163,6 +201,10 @@ def scale_service(service: str, replicas: int) -> dict[str, Any]:
             )
 
         success = result.returncode == 0
+
+        if success:
+            _notify_prometheus_remediation(f"scale_service:{replicas}")
+
         return {
             "service": service,
             "success": success,
