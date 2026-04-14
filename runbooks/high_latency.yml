@@ -1,9 +1,9 @@
 name: high_latency
 description: |
   Handles elevated response latency and slow endpoint issues.
-  This runbook identifies which endpoints are slow, checks resource
-  utilization, and scales the service if CPU is saturated. Escalates
-  if p99 latency remains unacceptable after scaling.
+  This runbook identifies which endpoints are slow, checks CPU and memory,
+  and restarts or scales the service to relieve pressure. Verifies via
+  latency metrics and alert_status after remediation.
 
 triggers:
   - HighLatency
@@ -12,21 +12,29 @@ triggers:
   - P99LatencyHigh
 
 actions:
-  - "get_metrics: Query p50/p95/p99 latency by endpoint — histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) by (handler)"
-  - "get_metrics: Query CPU utilization — rate(container_cpu_usage_seconds_total[5m]) by (container_name)"
-  - "get_service_status: Check current service health and replica count"
-  - "get_metrics: Query memory usage — container_memory_usage_bytes by (container_name)"
-  - "run_diagnostic: Run memory_pressure diagnostic to check for memory saturation causing latency"
-  - "scale_service: Scale up the service if CPU utilization is above 80% — add replicas to distribute load"
-  - "get_metrics: Re-query p99 latency 2 minutes after scaling to verify improvement"
+  - "get_metrics: Query p99 latency — histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) to confirm latency >3s"
+  - "get_metrics: Query CPU utilization — rate(container_cpu_usage_seconds_total[5m]) to check if CPU is saturated"
+  - "get_recent_logs: Fetch last 200 lines — look for GC pauses, thread pool saturation, slow query warnings"
+  - "run_diagnostic: Run memory_pressure diagnostic to check for memory saturation"
+  - "restart_service: Restart service to clear JVM heap, goroutine leak, or thread pool saturation (requires approval)"
+  - "get_metrics: Re-query p99 latency after restart — expect drop from >4s to <0.5s"
+  - "run_diagnostic: Run alert_status to confirm the latency alert resolved"
+
+verification:
+  resolved_when:
+    - "alert_status returns alert_firing=false"
+    - "p99 latency drops below 1s (down from >3s)"
+    - "CPU usage drops below 50%"
+  escalate_when:
+    - "p99 latency remains above 5s after scaling to maximum replicas"
+    - "latency caused by upstream dependency issues"
 
 escalation_threshold: |
-  Escalate if p99 latency remains above 5 seconds after scaling to maximum
-  allowed replicas (8). Also escalate if latency is caused by upstream
-  dependency issues rather than resource saturation.
+  Escalate if p99 latency remains above 5s after restart/scaling,
+  or if the root cause is an upstream dependency issue.
 
 metadata:
   severity: P2
   team: platform
-  runbook_version: "1.0"
-  last_updated: "2024-01-01"
+  runbook_version: "2.0"
+  last_updated: "2026-04-11"

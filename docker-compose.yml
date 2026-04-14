@@ -20,7 +20,7 @@ services:
       - API_KEY=${API_KEY:-}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       - PAGERDUTY_ROUTING_KEY=${PAGERDUTY_ROUTING_KEY:-}
-      - CORRELATION_WINDOW_SECONDS=${CORRELATION_WINDOW_SECONDS:-300}
+      - CORRELATION_WINDOW_SECONDS=${CORRELATION_WINDOW_SECONDS:-60}
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,7 +54,9 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       - PAGERDUTY_ROUTING_KEY=${PAGERDUTY_ROUTING_KEY:-}
-      - CORRELATION_WINDOW_SECONDS=${CORRELATION_WINDOW_SECONDS:-300}
+      - CORRELATION_WINDOW_SECONDS=${CORRELATION_WINDOW_SECONDS:-60}
+      - MOCK_SCENARIO=${MOCK_SCENARIO:-high_error_rate}
+      - USE_MOCK_LOGS=${USE_MOCK_LOGS:-true}
     user: "0"  # root required to access Docker socket on macOS/Linux
     volumes:
       - ./runbooks:/app/runbooks:ro
@@ -110,6 +112,24 @@ services:
       - MOCK_SCENARIO=${MOCK_SCENARIO:-high_error_rate}
       - PORT=9091
     restart: unless-stopped
+
+  # ── React Dashboard (nginx-served production build) ────────────────────────
+  ui:
+    build:
+      context: ui
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      agent-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ── Alertmanager ────────────────────────────────────────────────────────────
   alertmanager:

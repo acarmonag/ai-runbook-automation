@@ -1,9 +1,9 @@
 name: cpu_spike
 description: |
   Handles CPU saturation and sustained high CPU usage.
-  This runbook identifies which processes are consuming CPU, runs
-  profiling diagnostics, and scales the service to distribute load.
-  Escalates if CPU remains saturated after scaling to maximum replicas.
+  This runbook identifies the CPU hog (goroutine leak, infinite loop, hot query),
+  restarts or scales the service to relieve CPU pressure, and verifies via
+  CPU metrics and alert_status after remediation.
 
 triggers:
   - HighCPU
@@ -12,21 +12,28 @@ triggers:
   - ContainerCPUHigh
 
 actions:
-  - "get_metrics: Query CPU usage by container — rate(container_cpu_usage_seconds_total[5m]) by (container_name, pod)"
-  - "get_metrics: Query CPU throttling — rate(container_cpu_cfs_throttled_seconds_total[5m]) / rate(container_cpu_cfs_periods_total[5m])"
-  - "run_diagnostic: Run memory_pressure diagnostic (high CPU and memory often co-occur)"
-  - "run_diagnostic: Run connection_count diagnostic — high connections can cause CPU saturation"
-  - "get_recent_logs: Fetch last 100 lines to look for hot-loop indicators or excessive request logging"
-  - "scale_service: Scale service to distribute CPU load across more replicas"
-  - "get_metrics: Re-query CPU utilization 3 minutes after scaling to verify relief"
+  - "get_metrics: Query CPU usage — rate(container_cpu_usage_seconds_total[5m]) to confirm CPU >90%"
+  - "get_recent_logs: Fetch last 100 lines — look for goroutine leak, infinite loop, hot-loop indicators"
+  - "run_diagnostic: Run connection_count diagnostic — high connections can saturate CPU"
+  - "restart_service: Restart service to clear goroutine leaks and CPU-bound infinite loops (requires approval)"
+  - "get_metrics: Re-query CPU after restart — expect drop from >90% to <50%"
+  - "run_diagnostic: Run alert_status to confirm CPU alert resolved"
+
+verification:
+  resolved_when:
+    - "alert_status returns alert_firing=false"
+    - "CPU drops below 50% (down from >90%)"
+    - "p99 latency returns to <1s"
+  escalate_when:
+    - "CPU stays above 90% after restart and scaling to 8 replicas"
+    - "root cause is inefficient query or code-level hot loop"
 
 escalation_threshold: |
-  Escalate if CPU stays above 90% after scaling to maximum 8 replicas.
-  This indicates a code-level issue (hot loop, inefficient query, etc.)
-  that cannot be solved by horizontal scaling alone.
+  Escalate if CPU stays above 90% after restart and scaling to maximum 8 replicas.
+  This indicates a code-level issue that cannot be solved by horizontal scaling.
 
 metadata:
   severity: P2
   team: platform
-  runbook_version: "1.0"
-  last_updated: "2024-01-01"
+  runbook_version: "2.0"
+  last_updated: "2026-04-11"

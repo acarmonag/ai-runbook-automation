@@ -2,8 +2,7 @@ name: service_down
 description: |
   Handles service outages and failing health checks.
   This runbook immediately checks service state, collects crash logs,
-  attempts a restart, and verifies recovery. If the service does not
-  recover after restart, escalates immediately — service downtime is P1.
+  attempts a restart, and verifies recovery. Service downtime is P1.
 
 triggers:
   - ServiceDown
@@ -13,23 +12,31 @@ triggers:
   - PodCrashLooping
 
 actions:
-  - "get_service_status: Immediately check current container state, restart count, and last exit code"
+  - "get_service_status: Immediately check container state, restart count, and last exit code"
   - "get_recent_logs: Fetch last 500 lines from the crashed service to identify crash reason"
-  - "run_diagnostic: Run error_rate diagnostic to confirm service is truly down vs. partial failure"
-  - "restart_service: Restart the service (requires approval — but note: service is already down)"
-  - "get_service_status: Verify service is back up and running after restart"
-  - "get_metrics: Query health check success rate to confirm recovery — up{job='service-name'}"
-  - "escalate: Escalate immediately if service does not recover within 2 restart attempts"
+  - "run_diagnostic: Run error_rate diagnostic to confirm service is truly down (error_rate=1.0)"
+  - "restart_service: Restart the service (requires approval — service is already down, this is the primary remediation)"
+  - "get_service_status: Verify service is back up after restart — expect status=running"
+  - "get_metrics: Query health check — up{job='api-service'} should return 1.0 after recovery"
+  - "run_diagnostic: Run alert_status to confirm alert resolved and service is healthy"
+
+verification:
+  resolved_when:
+    - "alert_status returns alert_firing=false"
+    - "get_service_status returns running=true"
+    - "up metric returns 1.0"
+  escalate_when:
+    - "service does not come up after restart"
+    - "service crashes again within 5 minutes"
+    - "exit code 137 (OOM kill)"
+    - "logs show database connection failures"
 
 escalation_threshold: |
-  Escalate immediately (P1) if:
-  - Service does not come up after restart
-  - Service crashes again within 5 minutes of restart
-  - Exit code indicates OOM kill (exit code 137)
-  - Logs show database connection failures (potential cascading failure)
+  Escalate immediately (P1) if service does not recover after restart,
+  crashes again within 5 minutes, or shows OOM kill (exit code 137).
 
 metadata:
   severity: P1
   team: platform
-  runbook_version: "1.0"
-  last_updated: "2024-01-01"
+  runbook_version: "2.0"
+  last_updated: "2026-04-11"

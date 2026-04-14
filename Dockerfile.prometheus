@@ -5,8 +5,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir fastapi uvicorn httpx
 
-COPY simulator/mock_prometheus.py ./simulator/mock_prometheus.py
 COPY simulator/__init__.py ./simulator/__init__.py
+COPY simulator/scenario_state.py ./simulator/scenario_state.py
+COPY simulator/mock_logs.py ./simulator/mock_logs.py
+COPY simulator/mock_prometheus.py ./simulator/mock_prometheus.py
 
 RUN groupadd -r prometheus && useradd -r -g prometheus prometheus
 USER prometheus
@@ -15,4 +17,4 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 9091
 
-CMD ["python", "simulator/mock_prometheus.py"]
+CMD ["uvicorn", "simulator.mock_prometheus:app", "--host", "0.0.0.0", "--port", "9091"]
