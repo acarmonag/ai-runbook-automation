@@ -23,6 +23,7 @@ from agent.approval_gate import ApprovalGate
 from agent.llm.base import LLMResponse, ToolCall
 from agent.llm.factory import create_backend
 from agent.runbook_registry import RunbookRegistry
+from agent.sre_interpreter import SREInterpreter
 from agent.state_machine import IncidentStateMachine, IncidentState
 
 logger = logging.getLogger(__name__)
@@ -230,6 +231,7 @@ class SREAgent:
         self.approval_gate = approval_gate
         # Allow injection for tests; otherwise auto-create from env
         self.llm = llm_backend if llm_backend is not None else create_backend()
+        self.interpreter = SREInterpreter()
 
     def run(self, alert: dict[str, Any]) -> dict[str, Any]:
         """
@@ -397,6 +399,10 @@ class SREAgent:
                 )
                 duration_ms = int((time.time() - start_time) * 1000)
 
+                # Enrich raw output with SRE domain knowledge before feeding to LLM
+                raw_output = result.output if isinstance(result.output, dict) else {"raw": result.output}
+                enriched_output = self.interpreter.interpret(tool_name, tool_input, raw_output)
+
                 actions_taken.append({
                     "action": tool_name,
                     "params": tool_input,
@@ -411,7 +417,7 @@ class SREAgent:
                     "tool_use_id": tool_call.id,
                     "content": json.dumps({
                         "success": result.success,
-                        "output": result.output,
+                        "output": enriched_output,
                         "duration_ms": duration_ms,
                         "error": result.error,
                     }),

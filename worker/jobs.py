@@ -16,7 +16,7 @@ from db.database import AsyncSessionLocal
 from db.incident_store import create_incident, update_incident, get_incident
 from agent.actions.registry import build_default_registry
 from agent.agent import SREAgent
-from agent.approval_gate import ApprovalGate
+from agent.approval_gate import ApprovalGate, ApprovalMode
 from agent.runbook_registry import RunbookRegistry
 from worker.publisher import publish_incident_update
 from worker.pir import generate_pir
@@ -52,10 +52,10 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
             })
         await publish_incident_update(ctx["redis"], incident_id, "PROCESSING")
 
-    # Build agent
+    # Build agent — read mode from Redis so UI toggle takes effect immediately
     registry = build_default_registry()
     runbook_registry = RunbookRegistry()
-    approval_gate = ApprovalGate()
+    approval_gate = ApprovalGate(mode=await _resolve_approval_mode(ctx["redis"]))
     agent = SREAgent(
         action_registry=registry,
         runbook_registry=runbook_registry,
@@ -157,3 +157,19 @@ def _iso_now() -> str:
 def _now_dt():
     from datetime import datetime, timezone
     return datetime.now(timezone.utc)
+
+
+async def _resolve_approval_mode(redis_client: Any) -> ApprovalMode:
+    """Read mode from Redis (set by UI toggle); fall back to APPROVAL_MODE env var."""
+    try:
+        raw = await redis_client.get("agent:mode")
+        if raw:
+            mode_str = raw.decode() if isinstance(raw, bytes) else str(raw)
+            return ApprovalMode(mode_str.upper())
+    except Exception:
+        pass
+    env_raw = os.environ.get("APPROVAL_MODE", "AUTO").upper()
+    try:
+        return ApprovalMode(env_raw)
+    except ValueError:
+        return ApprovalMode.AUTO

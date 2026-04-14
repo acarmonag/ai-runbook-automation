@@ -1,0 +1,1 @@
+{"name":"ruvector-core-darwin-arm64","version":"0.1.29","description":"Native bindings for @ruvector/core - darwin-arm64","main":"ruvector.node","os":["darwin"],"cpu":["arm64"],"license":"MIT","repository":{"type":"git","url":"https://github.com/ruvnet/ruvector.git"}}

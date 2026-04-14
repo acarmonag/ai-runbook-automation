@@ -459,6 +459,48 @@ async def update_runbook(
     return {"updated": name, "path": os.path.basename(target_path)}
 
 
+# ─── Agent Mode Endpoints ─────────────────────────────────────────────────────
+
+_VALID_MODES = {"AUTO", "MANUAL", "DRY_RUN"}
+_AGENT_MODE_KEY = "agent:mode"
+
+
+@app.get("/agent/mode")
+async def get_agent_mode():
+    """Return the current agent approval mode (AUTO | MANUAL | DRY_RUN)."""
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(REDIS_URL, socket_connect_timeout=2)
+        raw = await r.get(_AGENT_MODE_KEY)
+        await r.aclose()
+        mode = raw.decode() if raw else os.environ.get("APPROVAL_MODE", "AUTO").upper()
+    except Exception:
+        mode = os.environ.get("APPROVAL_MODE", "AUTO").upper()
+    if mode not in _VALID_MODES:
+        mode = "AUTO"
+    return {"mode": mode}
+
+
+@app.post("/agent/mode")
+async def set_agent_mode(body: dict[str, Any] = Body(...)):
+    """Set the agent approval mode. Body: { mode: "AUTO" | "MANUAL" | "DRY_RUN" }"""
+    mode = str(body.get("mode", "")).upper()
+    if mode not in _VALID_MODES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid mode '{mode}'. Must be one of: {sorted(_VALID_MODES)}",
+        )
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(REDIS_URL, socket_connect_timeout=2)
+        await r.set(_AGENT_MODE_KEY, mode)
+        await r.aclose()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}")
+    logger.info("Agent mode changed to %s via API", mode)
+    return {"mode": mode}
+
+
 # ─── Simulate Endpoint ────────────────────────────────────────────────────────
 
 @app.post("/simulate", response_model=WebhookResponse)

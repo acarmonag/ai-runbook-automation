@@ -52,11 +52,30 @@ export function Markdown({ text, className = "" }: MarkdownProps) {
         i++;
       }
       i++; // consume closing ```
+
+      // plaintext/text fences are just prose — render as paragraphs
+      const isPlaintext = /^(plaintext|plain|text)$/i.test(lang) || lang === "";
+      if (isPlaintext) {
+        const content = codeLines.join("\n").trim();
+        if (content) {
+          content.split("\n").forEach((l, idx) => {
+            if (l.trim()) {
+              elements.push(
+                <p key={`${key++}-${idx}`} className="text-sm text-zinc-300 leading-relaxed">
+                  {renderInline(l)}
+                </p>
+              );
+            }
+          });
+        }
+        continue;
+      }
+
       const isShell = /^(bash|sh|shell|zsh|cmd)$/i.test(lang);
       elements.push(
         <div key={key++} className="rounded border border-zinc-700/50 bg-zinc-900 overflow-hidden my-1.5">
           <div className="px-3 py-1 flex items-center justify-between border-b border-zinc-700/50 bg-zinc-800/50">
-            <span className="text-[10px] font-mono text-zinc-500">{lang || "code"}</span>
+            <span className="text-[10px] font-mono text-zinc-500">{lang}</span>
             {isShell && (
               <span className="text-[10px] text-amber-600/70 italic">not executed — use tools</span>
             )}
