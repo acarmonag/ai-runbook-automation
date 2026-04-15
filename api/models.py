@@ -63,11 +63,18 @@ class AlertmanagerWebhook(BaseModel):
 # ─── Incident Models ──────────────────────────────────────────────────────────
 
 class IncidentStatus(str, Enum):
-    PENDING = "PENDING"
-    PROCESSING = "PROCESSING"
-    RESOLVED = "RESOLVED"
-    ESCALATED = "ESCALATED"
-    FAILED = "FAILED"
+    PENDING          = "PENDING"
+    PROCESSING       = "PROCESSING"
+    RESOLVED         = "RESOLVED"
+    ESCALATED        = "ESCALATED"
+    FAILED           = "FAILED"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    # State machine states (surfaced during active processing)
+    DETECTED         = "DETECTED"
+    OBSERVING        = "OBSERVING"
+    REASONING        = "REASONING"
+    ACTING           = "ACTING"
+    VERIFYING        = "VERIFYING"
 
 
 class ActionRecord(BaseModel):

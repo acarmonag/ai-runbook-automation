@@ -32,7 +32,7 @@ from api.models import (
     WebhookResponse,
 )
 from api.ws_manager import WebSocketManager
-from db.database import create_tables, get_session
+from db.database import create_tables, get_session, AsyncSessionLocal
 from db.incident_store import (
     create_incident,
     get_incident,
@@ -71,7 +71,11 @@ async def lifespan(app: FastAPI):
 
 
 async def _redis_listener() -> None:
-    """Subscribe to incident_updates channel and push to WebSocket clients."""
+    """Subscribe to incident_updates channel and push to WebSocket clients.
+
+    Also intercepts PENDING_APPROVAL messages to write pending_action +
+    approval_state=PENDING into the DB so the UI can poll for it.
+    """
     import redis.asyncio as aioredis
 
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
@@ -79,8 +83,33 @@ async def _redis_listener() -> None:
     await pubsub.subscribe("incident_updates")
     try:
         async for message in pubsub.listen():
-            if message["type"] == "message":
-                await ws_manager.broadcast(message["data"])
+            if message["type"] != "message":
+                continue
+            raw = message["data"]
+            await ws_manager.broadcast(raw)
+
+            # Persist PENDING_APPROVAL state so the incident detail page shows
+            # the ApprovalBanner without a separate HTTP call.
+            try:
+                data = json.loads(raw)
+                if data.get("status") == "PENDING_APPROVAL":
+                    incident_id    = data.get("incident_id", "")
+                    pending_action = data.get("pending_action", "")
+                    if incident_id:
+                        # Merge action params into sre_insight so the UI can
+                        # show the agent's reason without a separate DB column.
+                        sre_insight = dict(data.get("sre_insight") or {})
+                        if data.get("params"):
+                            sre_insight["params"] = data["params"]
+                        async with AsyncSessionLocal() as session:
+                            await update_incident(session, incident_id, {
+                                "status":         "PENDING_APPROVAL",
+                                "pending_action": pending_action,
+                                "approval_state": "PENDING",
+                                "sre_insight":    sre_insight,
+                            })
+            except Exception as exc:
+                logger.debug(f"_redis_listener: could not persist PENDING_APPROVAL: {exc}")
     except asyncio.CancelledError:
         pass
     finally:
@@ -227,14 +256,33 @@ async def approve_action(
     inc = await get_incident(session, incident_id)
     if not inc:
         raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found")
-    await update_incident(session, incident_id, {"approval_state": "APPROVED"})
+    # Transition back to PROCESSING so the UI stops showing the approval banner
+    # and the global notification bar clears immediately.
+    await update_incident(session, incident_id, {
+        "status":         "PROCESSING",
+        "approval_state": "APPROVED",
+        "pending_action": None,
+    })
+    # Unblock the waiting ApprovalGate in the worker and broadcast status change
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(REDIS_URL, socket_connect_timeout=2)
+        await r.set(f"approval_decision:{incident_id}", "APPROVED", ex=60)
+        await r.publish("incident_updates", json.dumps({
+            "incident_id": incident_id,
+            "status": "PROCESSING",
+        }))
+        await r.aclose()
+    except Exception as exc:
+        logger.warning(f"Could not write approval decision to Redis: {exc}")
+    responded_at = datetime.now(timezone.utc).isoformat()
     return ApprovalResponse(
         incident_id=incident_id,
         action=body.get("action", "unknown"),
         approved=True,
         operator=body.get("operator", "api-user"),
         reason=body.get("reason"),
-        responded_at=datetime.now(timezone.utc).isoformat(),
+        responded_at=responded_at,
     )
 
 
@@ -247,15 +295,51 @@ async def reject_action(
     inc = await get_incident(session, incident_id)
     if not inc:
         raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found")
-    await update_incident(session, incident_id, {"approval_state": "REJECTED"})
+    await update_incident(session, incident_id, {
+        "status":         "PROCESSING",
+        "approval_state": "REJECTED",
+        "pending_action": None,
+    })
+    # Unblock the waiting ApprovalGate in the worker and broadcast status change
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(REDIS_URL, socket_connect_timeout=2)
+        await r.set(f"approval_decision:{incident_id}", "REJECTED", ex=60)
+        await r.publish("incident_updates", json.dumps({
+            "incident_id": incident_id,
+            "status": "PROCESSING",
+        }))
+        await r.aclose()
+    except Exception as exc:
+        logger.warning(f"Could not write rejection decision to Redis: {exc}")
+    responded_at = datetime.now(timezone.utc).isoformat()
     return ApprovalResponse(
         incident_id=incident_id,
         action=body.get("action", "unknown"),
         approved=False,
         operator=body.get("operator", "api-user"),
         reason=body.get("reason", "Rejected by operator"),
-        responded_at=datetime.now(timezone.utc).isoformat(),
+        responded_at=responded_at,
     )
+
+
+# ─── Simulator Control ───────────────────────────────────────────────────────
+
+@app.post("/simulator/scenario")
+async def set_simulator_scenario(body: dict = Body(default={})):
+    """Switch the active mock Prometheus scenario at runtime (demo/testing only)."""
+    scenario = body.get("scenario", "")
+    if not scenario:
+        raise HTTPException(status_code=400, detail="Missing 'scenario' field")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{PROMETHEUS_URL}/api/v1/scenario",
+                json={"scenario": scenario},
+            )
+            return resp.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach mock Prometheus: {exc}")
 
 
 # ─── Stats Endpoint ───────────────────────────────────────────────────────────
