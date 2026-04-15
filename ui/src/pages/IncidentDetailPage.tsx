@@ -56,6 +56,7 @@ export function IncidentDetailPage() {
         <ApprovalBanner
           incidentId={incident.incident_id}
           pendingAction={incident.pending_action}
+          sreInsight={incident.sre_insight}
         />
       )}
 
@@ -118,7 +119,7 @@ export function IncidentDetailPage() {
           <PirPanel pir={incident.pir} />
         </Card>
       )}
-      {!incident.pir && incident.status === "RESOLVED" && (
+      {!incident.pir && ["RESOLVED", "ESCALATED", "FAILED"].includes(incident.status) && (
         <Card title="Post-Incident Review">
           <p className="text-sm text-zinc-500 italic">Generating PIR… refresh in a moment.</p>
         </Card>

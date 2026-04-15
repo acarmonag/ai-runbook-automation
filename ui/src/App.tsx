@@ -1,6 +1,7 @@
 import { Routes, Route } from "react-router-dom";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { TopBar } from "@/components/layout/TopBar";
+import { ApprovalNotificationBar } from "@/components/layout/ApprovalNotificationBar";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { IncidentDetailPage } from "@/pages/IncidentDetailPage";
 import { RunbooksPage } from "@/pages/RunbooksPage";
@@ -12,6 +13,7 @@ export default function App() {
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         <TopBar />
+        <ApprovalNotificationBar />
         <main className="flex-1 overflow-y-auto p-4">
           <Routes>
             <Route path="/" element={<DashboardPage />} />

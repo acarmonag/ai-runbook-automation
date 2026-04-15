@@ -9,13 +9,20 @@ interface IncidentRowProps {
 
 export function IncidentRow({ incident }: IncidentRowProps) {
   const isActive = !["RESOLVED", "ESCALATED", "FAILED"].includes(incident.status);
+  const needsApproval = incident.status === "PENDING_APPROVAL";
 
   return (
     <Link
       to={`/incidents/${incident.incident_id}`}
-      className="flex items-center gap-3 border-b border-zinc-800/60 px-4 py-3 transition-colors hover:bg-zinc-800/30"
+      className={`flex items-center gap-3 border-b border-zinc-800/60 px-4 py-3 transition-colors hover:bg-zinc-800/30 ${needsApproval ? "bg-amber-950/20" : ""}`}
     >
       <StatusBadge status={incident.status} />
+      {needsApproval && (
+        <span className="relative flex h-2 w-2 shrink-0">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+        </span>
+      )}
 
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-zinc-100">{incident.alert_name}</p>

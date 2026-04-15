@@ -31,30 +31,46 @@ logger = logging.getLogger(__name__)
 _LLM_MAX_RETRIES = 3
 _LLM_RETRY_DELAYS = [2, 5, 10]  # seconds between retries
 
-SYSTEM_PROMPT = """You are an autonomous SRE agent. Investigate and remediate production incidents by calling tools, not by writing instructions.
+SYSTEM_PROMPT = """You are an autonomous SRE agent. Investigate and remediate production incidents by calling tools.
 
-RESPONSE FORMAT — CRITICAL
-Write plain prose only. No markdown: no headers, no bold, no bullet lists, no numbered lists, no code blocks, no backticks around commands. Keep any text you write to 1-3 short sentences that state what you observed and what you will do next. Then call the appropriate tool immediately. Never write shell commands or docker commands — use the provided tools instead.
+OUTPUT FORMAT — ABSOLUTE RULES — NEVER BREAK THESE:
+1. Write plain prose ONLY. Maximum 2 sentences stating what you observed and what you will do next.
+2. NEVER output JSON, XML, or any structured data in your text.
+3. NEVER write code blocks, backtick fences, or any ``` markers.
+4. NEVER write bash, shell, kubectl, docker, or any commands.
+5. NEVER write numbered lists, bullet lists, or "Next Steps" sections.
+6. NEVER write headers (##, ###), bold (**text**), or italic (*text*).
+7. NEVER write sections like "Tooling Response:", "Result:", "Immediate Action:", "Analysis:".
+8. NEVER suggest actions in text — call the tool directly instead.
+After your 1-2 sentence observation, call the appropriate tool. That is all.
 
 WORKFLOW
 Observe: call get_metrics, get_recent_logs, get_service_status to collect data.
-Reason: one sentence stating the likely root cause based on what you observed.
-Act: call the appropriate tool (restart_service, scale_service, run_diagnostic, escalate).
-Verify: after any remediation, call get_metrics and run_diagnostic with check=alert_status.
-Report: call complete_incident with the structured report. Never write the report as text.
+Reason: one sentence stating the likely root cause.
+Act: call the correct remediation tool based on the sre_insight in the tool result.
+Verify: after any remediation, call get_metrics and run_diagnostic(alert_status).
+Report: call complete_incident. Never write the report as text.
+
+REMEDIATION SELECTION — use sre_insight.next_step from tool results:
+- connection pool exhaustion → restart_service
+- memory leak (>1500MB) → restart_service
+- CPU saturation (>90%) → restart_service first, then scale_service if CPU stays high
+- high traffic / load → scale_service (scale UP, not restart)
+- latency spike with normal CPU → scale_service
+- disk full → run_diagnostic(disk_usage) then escalate
+- downstream dependency failure → escalate
 
 ACTION RULES
-All actions are pre-approved in AUTO mode. Call tools directly — never ask for permission.
+All actions are pre-approved in AUTO mode. In MANUAL mode, call the tool and wait — do not write what you plan to do.
 Always collect data before making changes.
-A restart is correct for: crashes, memory leaks, high error rates, CPU spikes.
-If a tool returns an error, note it briefly and continue — do not escalate on a single tool failure.
-After restart_service or scale_service, always re-check metrics and run alert_status diagnostic.
+If a tool returns an error, note it in one sentence and continue — do not escalate on a single failure.
+After restart_service or scale_service, always verify with get_metrics and run_diagnostic(alert_status).
 
-RESOLUTION — declare RESOLVED when after remediation any of these is true:
-run_diagnostic alert_status returns alert_firing false, error rate below 1%, latency below 1s, memory below 500MB, CPU below 50%.
+RESOLUTION — declare RESOLVED when any of these is true after remediation:
+alert_status returns alert_firing=false, error rate below 1%, latency below 1s, memory below 500MB, CPU below 50%.
 
-ESCALATION — only if all of these are true:
-At least 3 diagnostic tools have been called, remediation failed or was rejected, no improvement in metrics, root cause cannot be determined.
+ESCALATION — only if ALL of these are true:
+At least 3 tools have been called, remediation failed or was rejected, no improvement in metrics.
 
 FINISHING — call complete_incident when done. This is mandatory.
 """
@@ -233,12 +249,20 @@ class SREAgent:
         self.llm = llm_backend if llm_backend is not None else create_backend()
         self.interpreter = SREInterpreter()
 
-    def run(self, alert: dict[str, Any]) -> dict[str, Any]:
+    def run(self, alert: dict[str, Any], incident_id: str | None = None) -> dict[str, Any]:
         """
         Run the full OBSERVE → REASON → ACT → VERIFY → REPORT loop.
         Returns a structured incident report.
+
+        Args:
+            alert: The raw alert payload.
+            incident_id: Pre-assigned incident ID from the job queue.  When
+                provided this ID is used in all Redis/DB events so the approval
+                gate and the UI refer to the same record.  If omitted a random
+                ID is generated (useful for standalone testing).
         """
-        incident_id = str(uuid.uuid4())[:8]
+        if incident_id is None:
+            incident_id = str(uuid.uuid4())[:8]
         alert_name = alert.get("labels", {}).get("alertname", "Unknown")
 
         logger.info(f"[{incident_id}] Starting agent loop for alert: {alert_name}")
@@ -267,7 +291,8 @@ class SREAgent:
         else:
             logger.warning(f"[{incident_id}] No runbook found for alert: {alert_name}")
 
-        initial_message = self._build_initial_message(incident_id, alert, runbook_context)
+        is_manual_mode = self.approval_gate.mode.value == "MANUAL"
+        initial_message = self._build_initial_message(incident_id, alert, runbook_context, is_manual_mode)
         messages: list[dict] = [{"role": "user", "content": initial_message}]
         reasoning_transcript: list[dict] = []
         actions_taken: list[dict] = []
@@ -302,6 +327,10 @@ class SREAgent:
             messages.append(response.raw_assistant_message)
 
             if response.stop_reason == "end_turn":
+                # In MANUAL mode the agent may have written analysis and paused
+                # correctly — never push it to act autonomously.
+                is_manual = self.approval_gate.mode.value == "MANUAL"
+
                 # Check if the agent skipped remediation (wrote analysis but didn't act).
                 remediation_actions = {"restart_service", "scale_service", "escalate", "complete_incident"}
                 has_remediated = any(a.get("action") in remediation_actions for a in actions_taken)
@@ -309,11 +338,19 @@ class SREAgent:
                 if not has_remediated and iteration <= 3:
                     # Push the agent to proceed with the runbook action instead of just analyzing.
                     logger.info(f"[{incident_id}] Agent wrote analysis without acting — pushing to execute runbook")
-                    nudge = (
-                        "You have completed your analysis. Good. Now you MUST proceed with the runbook action. "
-                        "Do not write more analysis — call the appropriate tool to remediate the incident. "
-                        "In AUTO mode all actions are pre-approved. Execute restart_service or scale_service now."
-                    )
+                    if is_manual:
+                        nudge = (
+                            "You have completed your analysis. Now call the appropriate tool to remediate — "
+                            "call restart_service or scale_service as indicated. "
+                            "Your tool call will be sent to a human operator for approval before it executes. "
+                            "Do not write what you plan to do — call the tool now."
+                        )
+                    else:
+                        nudge = (
+                            "You have completed your analysis. Now proceed with the runbook action. "
+                            "Do not write more analysis — call the appropriate tool to remediate the incident. "
+                            "All actions are pre-approved. Execute restart_service or scale_service now."
+                        )
                     messages.append({"role": "user", "content": nudge})
                     reasoning_transcript.append({
                         "role": "user",
@@ -369,11 +406,48 @@ class SREAgent:
 
                 # Check approval for destructive actions
                 if self._is_destructive(tool_name, tool_input):
+                    # Pull sre_insight from the most recent action that has one.
+                    last_insight = dict(next(
+                        (r["sre_insight"] for r in reversed(actions_taken) if r.get("sre_insight")),
+                        {},
+                    ))
+
+                    # If the LLM wrote analysis text before calling the tool,
+                    # use it as interpretation fallback so the approval banner
+                    # always has something meaningful to show.
+                    if response.text and not last_insight.get("interpretation"):
+                        last_insight["interpretation"] = response.text.strip()[:400]
+
+                    # If the agent didn't embed a reason in the tool params,
+                    # derive one from the insight so the banner "Why" row is never blank.
+                    if "reason" not in tool_input:
+                        reason_text = (
+                            last_insight.get("next_step")
+                            or last_insight.get("interpretation", "")[:200]
+                        )
+                        if reason_text:
+                            tool_input = {**tool_input, "reason": reason_text}
+
                     approved = self.approval_gate.approve(
                         action=tool_name,
                         params=tool_input,
                         incident_id=incident_id,
+                        sre_insight=last_insight,
                     )
+                    decision_label = "APPROVED" if approved else "REJECTED"
+                    # Record the human decision in the transcript
+                    decision_note = (
+                        f"Human operator {decision_label} action: {tool_name}"
+                        + (f"({tool_input})" if tool_input else "")
+                        + f" at {datetime.now(timezone.utc).isoformat()}"
+                    )
+                    reasoning_transcript.append({
+                        "role": "user",
+                        "content": decision_note,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "event": "approval_decision",
+                        "approved": approved,
+                    })
                     if not approved:
                         tool_results.append({
                             "type": "tool_result",
@@ -408,6 +482,7 @@ class SREAgent:
                     "params": tool_input,
                     "result": "SUCCESS" if result.success else "FAILED",
                     "output": result.output,
+                    "sre_insight": enriched_output.get("sre_insight"),
                     "duration_ms": duration_ms,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
@@ -468,11 +543,23 @@ class SREAgent:
         return None
 
     def _build_initial_message(
-        self, incident_id: str, alert: dict[str, Any], runbook_context: str
+        self, incident_id: str, alert: dict[str, Any], runbook_context: str,
+        is_manual: bool = False,
     ) -> str:
         labels = alert.get("labels", {})
         annotations = alert.get("annotations", {})
         description = annotations.get("description", "").strip()
+        if is_manual:
+            closing = (
+                "Begin investigation. Call tools to collect data, then remediate. "
+                "Destructive actions (restart, scale-down) require human approval — call the tool and the system will pause for operator review. "
+                "When done call complete_incident."
+            )
+        else:
+            closing = (
+                "Begin investigation. Call tools to collect data, then remediate. "
+                "All actions are pre-approved. When done call complete_incident."
+            )
         return (
             f"Incident {incident_id}\n"
             f"Alert: {labels.get('alertname', 'Unknown')} | "
@@ -481,8 +568,7 @@ class SREAgent:
             f"Summary: {annotations.get('summary', 'No summary available')}\n"
             + (f"Details: {description}\n" if description else "")
             + f"\n{runbook_context}\n"
-            "Begin investigation. Call tools to collect data, then remediate. "
-            "All actions are pre-approved. When done call complete_incident."
+            + closing
         )
 
     def _is_destructive(self, action_name: str, params: dict) -> bool:
@@ -508,12 +594,15 @@ class SREAgent:
         escalated = any(a.get("action") == "escalate" for a in actions_taken)
         outcome = structured.get("outcome") or ("ESCALATED" if escalated else "RESOLVED")
 
+        # Build a clean summary — never expose raw JSON or code fences to the UI.
+        raw_summary = structured.get("summary") or self._clean_summary(final_text, actions_taken)
+
         return {
             "incident_id": incident_id,
             "alert_name": alert.get("labels", {}).get("alertname", "Unknown"),
             "alert": alert,
             "status": outcome,
-            "summary": structured.get("summary", final_text[:200]),
+            "summary": raw_summary,
             "root_cause": structured.get("root_cause", ""),
             "actions_taken": actions_taken,
             "recommendations": structured.get("recommendations", []),
@@ -567,6 +656,36 @@ class SREAgent:
             "resolved_at": datetime.now(timezone.utc).isoformat(),
             "full_agent_response": "",
         }
+
+    def _clean_summary(self, text: str, actions_taken: list) -> str:
+        """
+        Return a human-readable one-line summary from the agent's final text.
+        Strips JSON blobs, code fences, and markdown so the UI never sees raw
+        structured data in the Summary card.
+        """
+        import re
+
+        if not text or not text.strip():
+            # Derive summary from actions when the agent produced no text at all.
+            acted = [a["action"] for a in actions_taken if a.get("action") not in ("get_metrics", "get_recent_logs", "get_service_status", "run_diagnostic")]
+            if acted:
+                return f"Agent completed investigation. Actions: {', '.join(acted)}."
+            return "Agent completed investigation — see reasoning transcript for details."
+
+        # Strip code fences (``` ... ```)
+        cleaned = re.sub(r"```[\s\S]*?```", "", text).strip()
+        # Strip XML/HTML tags
+        cleaned = re.sub(r"<[^>]+>[\s\S]*?</[^>]+>", "", cleaned).strip()
+        # If it's pure JSON, don't show it
+        if cleaned.startswith("{") or cleaned.startswith("["):
+            acted = [a["action"] for a in actions_taken if a.get("action") not in ("get_metrics", "get_recent_logs", "get_service_status", "run_diagnostic")]
+            if acted:
+                return f"Agent completed investigation. Actions: {', '.join(acted)}."
+            return "Agent completed investigation — see reasoning transcript for details."
+
+        # Return first non-empty sentence / paragraph (max 200 chars)
+        first_line = next((ln.strip() for ln in cleaned.splitlines() if ln.strip()), cleaned)
+        return first_line[:200]
 
     def _extract_json_report(self, text: str) -> dict:
         import re

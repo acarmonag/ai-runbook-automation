@@ -4,6 +4,7 @@ export type IncidentStatus =
   | "RESOLVED"
   | "ESCALATED"
   | "FAILED"
+  | "PENDING_APPROVAL"
   // State machine states surfaced in detail view
   | "DETECTED"
   | "OBSERVING"
@@ -31,6 +32,8 @@ export interface TranscriptMessage {
   role: "user" | "assistant" | "system";
   content: string | ContentBlock[];
   timestamp?: string;
+  event?: string;
+  approved?: boolean;
 }
 
 export interface IncidentSummary {
@@ -60,6 +63,13 @@ export interface Incident {
   full_agent_response?: string;
   pending_action?: string;
   approval_state?: "PENDING" | "APPROVED" | "REJECTED";
+  sre_insight?: {
+    severity?: string;
+    interpretation?: string;
+    pattern?: string;
+    next_step?: string;
+    params?: Record<string, unknown>;
+  };
   pir?: PostIncidentReview;
 }
 
