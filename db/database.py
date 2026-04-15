@@ -38,8 +38,17 @@ class Base(DeclarativeBase):
 async def create_tables() -> None:
     """Create all tables on startup (idempotent)."""
     from db import models  # noqa: F401 — registers models with Base
+    from sqlalchemy import text
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent column additions for tables that predate a schema change.
+        for stmt in [
+            "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS sre_insight JSONB",
+        ]:
+            try:
+                await conn.execute(text(stmt))
+            except Exception:
+                pass
 
 
 async def get_session() -> AsyncSession:  # type: ignore[return]

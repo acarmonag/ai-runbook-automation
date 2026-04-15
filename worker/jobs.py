@@ -6,6 +6,8 @@ Each job is an async function. ARQ passes ctx (worker context) as first arg.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import os
 from typing import Any
@@ -55,7 +57,10 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
     # Build agent — read mode from Redis so UI toggle takes effect immediately
     registry = build_default_registry()
     runbook_registry = RunbookRegistry()
-    approval_gate = ApprovalGate(mode=await _resolve_approval_mode(ctx["redis"]))
+    approval_gate = ApprovalGate(
+        mode=await _resolve_approval_mode(ctx["redis"]),
+        redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379"),
+    )
     agent = SREAgent(
         action_registry=registry,
         runbook_registry=runbook_registry,
@@ -63,7 +68,13 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
     )
 
     try:
-        report = agent.run(alert)
+        # Run the synchronous agent loop in a thread pool so the async event
+        # loop stays responsive while the approval gate is blocking on human input.
+        loop = asyncio.get_event_loop()
+        report = await loop.run_in_executor(
+            None,
+            functools.partial(agent.run, alert, incident_id=incident_id),
+        )
     except Exception as exc:
         logger.exception(f"[{incident_id}] Agent crashed: {exc}")
         async with session_factory() as session:
@@ -109,8 +120,8 @@ async def process_alert(ctx: dict[str, Any], incident_id: str, alert: dict[str, 
     except Exception as exc:
         logger.warning(f"[{incident_id}] Failed to record metrics: {exc}")
 
-    # Auto-generate PIR for resolved incidents
-    if final_status == "RESOLVED":
+    # Auto-generate PIR for all terminal incidents
+    if final_status in ("RESOLVED", "ESCALATED", "FAILED"):
         await generate_pir(incident_id, report)
 
     # Cleanup: delete correlation key so the next identical alert fires a fresh incident.

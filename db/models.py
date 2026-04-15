@@ -34,6 +34,7 @@ class Incident(Base):
     state_history: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     pending_action: Mapped[Optional[str]] = mapped_column(String(255))
     approval_state: Mapped[Optional[str]] = mapped_column(String(50))
+    sre_insight: Mapped[Optional[dict]] = mapped_column(JSONB)
     # PIR auto-generated after resolution
     pir: Mapped[Optional[dict]] = mapped_column(JSONB)
     # LLM usage tracking
@@ -65,6 +66,7 @@ class Incident(Base):
             "state_history": self.state_history or [],
             "pending_action": self.pending_action,
             "approval_state": self.approval_state,
+            "sre_insight": self.sre_insight,
             "pir": self.pir,
             "llm_tokens_used": self.llm_tokens_used,
             "llm_model": self.llm_model,
