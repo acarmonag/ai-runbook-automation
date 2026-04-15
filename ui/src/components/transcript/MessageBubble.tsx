@@ -75,17 +75,27 @@ const outcomeStyle: Record<string, string> = {
   FAILED:    "border-red-700 bg-red-950/40 text-red-300",
 };
 
+const outcomeLabel: Record<string, string> = {
+  RESOLVED:  "Resolved",
+  ESCALATED: "Escalated",
+  FAILED:    "Failed",
+};
+
 export function FinalReportCard({ report }: { report: ParsedReport }) {
-  const outcome = report.outcome?.toUpperCase() ?? "UNKNOWN";
-  const style = outcomeStyle[outcome] ?? "border-zinc-700 bg-zinc-800/40 text-zinc-300";
+  const rawOutcome = report.outcome?.toUpperCase();
+  // Only show a badge for known terminal outcomes; skip if missing/unknown
+  const outcome = rawOutcome && outcomeStyle[rawOutcome] ? rawOutcome : null;
+  const style = outcome ? outcomeStyle[outcome] : "border-zinc-700 bg-zinc-800/40 text-zinc-300";
 
   return (
     <div className="mt-3 rounded-lg border border-zinc-700 bg-zinc-900 overflow-hidden">
       {/* header */}
-      <div className={clsx("flex items-center gap-2 px-3 py-2 border-b border-zinc-700/60", style.split(" ").slice(0, 2).join(" "))}>
-        <span className={clsx("text-xs font-bold uppercase tracking-wide", style.split(" ")[2])}>
-          {outcome}
-        </span>
+      <div className={clsx("flex items-center gap-2 px-3 py-2 border-b border-zinc-700/60", outcome ? style.split(" ").slice(0, 2).join(" ") : "bg-zinc-800/40")}>
+        {outcome && (
+          <span className={clsx("text-xs font-bold uppercase tracking-wide", style.split(" ")[2])}>
+            {outcomeLabel[outcome] ?? outcome}
+          </span>
+        )}
         <span className="text-xs text-zinc-400">Incident Report</span>
       </div>
 

@@ -10,7 +10,7 @@
  * messages) are correlated by tool_use_id so they render as a single row.
  */
 
-import { Bot, MessageSquare } from "lucide-react";
+import { Bot, MessageSquare, CheckCircle, XCircle } from "lucide-react";
 import type { TranscriptMessage, ContentBlock } from "@/types/incident";
 import { ToolPair } from "@/components/transcript/ToolCallBlock";
 import { Markdown } from "@/components/transcript/Markdown";
@@ -21,11 +21,12 @@ type ToolResultBlock = Extract<ContentBlock, { type: "tool_result" }>;
 
 // ── Timeline event types ──────────────────────────────────────────────────────
 
-type TextEvent  = { kind: "text";  text: string;  timestamp?: string };
-type ToolEvent  = { kind: "tool";  call: ToolUseBlock; result?: ToolResultBlock; timestamp?: string };
-type NudgeEvent = { kind: "nudge"; text: string;  timestamp?: string };
+type TextEvent     = { kind: "text";     text: string;  timestamp?: string };
+type ToolEvent     = { kind: "tool";     call: ToolUseBlock; result?: ToolResultBlock; timestamp?: string };
+type NudgeEvent    = { kind: "nudge";    text: string;  timestamp?: string };
+type ApprovalEvent = { kind: "approval"; text: string;  approved: boolean; timestamp?: string };
 
-type TimelineEvent = TextEvent | ToolEvent | NudgeEvent;
+type TimelineEvent = TextEvent | ToolEvent | NudgeEvent | ApprovalEvent;
 
 // ── Build timeline from raw messages ─────────────────────────────────────────
 
@@ -58,8 +59,16 @@ function buildTimeline(messages: TranscriptMessage[]): TimelineEvent[] {
         }
       }
     } else if (msg.role === "user" && typeof msg.content === "string" && msg.content.trim()) {
-      // String user messages are system-injected nudges — skip them in the timeline.
-      // They are internal prompts to the LLM, not user-visible events.
+      if (msg.event === "approval_decision") {
+        // Approval/rejection by a human operator — show it visibly
+        events.push({
+          kind: "approval",
+          text: msg.content,
+          approved: msg.approved ?? false,
+          timestamp: ts,
+        });
+      }
+      // Other string user messages are system-injected nudges — skip.
     }
     // Array user messages (tool_result blocks) are handled via correlation above — skip
   }
@@ -148,6 +157,24 @@ function NudgeEventRow({ event, step }: { event: NudgeEvent; step: number }) {
   );
 }
 
+// ── Approval event renderer ───────────────────────────────────────────────────
+
+function ApprovalEventRow({ event, step }: { event: ApprovalEvent; step: number }) {
+  return (
+    <TimelineRow step={step}>
+      <div className={`rounded border px-3 py-2 flex items-start gap-2 ${event.approved ? "border-emerald-800/60 bg-emerald-950/20" : "border-red-800/60 bg-red-950/20"}`}>
+        {event.approved
+          ? <CheckCircle className="h-3.5 w-3.5 shrink-0 text-emerald-400 mt-0.5" />
+          : <XCircle className="h-3.5 w-3.5 shrink-0 text-red-400 mt-0.5" />
+        }
+        <span className={`text-xs ${event.approved ? "text-emerald-300" : "text-red-300"}`}>
+          {event.text}
+        </span>
+      </div>
+    </TimelineRow>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ReasoningTranscript({ messages }: { messages: TranscriptMessage[] }) {
@@ -168,9 +195,10 @@ export function ReasoningTranscript({ messages }: { messages: TranscriptMessage[
       <div className="relative">
         {events.map((event, i) => {
           const step = i + 1;
-          if (event.kind === "text")  return <TextEventRow  key={i} event={event} step={step} />;
-          if (event.kind === "tool")  return <ToolEventRow  key={i} event={event} step={step} />;
-          if (event.kind === "nudge") return <NudgeEventRow key={i} event={event} step={step} />;
+          if (event.kind === "text")     return <TextEventRow     key={i} event={event} step={step} />;
+          if (event.kind === "tool")     return <ToolEventRow     key={i} event={event} step={step} />;
+          if (event.kind === "nudge")    return <NudgeEventRow    key={i} event={event} step={step} />;
+          if (event.kind === "approval") return <ApprovalEventRow key={i} event={event} step={step} />;
           return null;
         })}
 

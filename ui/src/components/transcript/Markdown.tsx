@@ -54,6 +54,33 @@ export function Markdown({ text, className = "" }: MarkdownProps) {
       i++; // consume closing ```
 
       // plaintext/text fences are just prose — render as paragraphs
+      // JSON-only code block → render as a compact key-value card
+      const isJsonBlock = lang === "json" || lang === "JSON";
+      if (isJsonBlock) {
+        const raw = codeLines.join("\n").trim();
+        let parsed: Record<string, unknown> | null = null;
+        try { parsed = JSON.parse(raw) as Record<string, unknown>; } catch { /* not valid JSON */ }
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const entries = Object.entries(parsed).filter(([, v]) => v !== null && v !== undefined);
+          elements.push(
+            <div key={key++} className="rounded border border-zinc-700/40 bg-zinc-800/50 overflow-hidden my-1.5">
+              <div className="px-3 py-1 border-b border-zinc-700/40 bg-zinc-800/30">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">Suggested action</span>
+              </div>
+              <div className="px-3 py-2 space-y-0.5">
+                {entries.map(([k, v]) => (
+                  <div key={k} className="flex gap-2 text-[11px]">
+                    <span className="shrink-0 font-mono text-zinc-500 w-20 truncate">{k}</span>
+                    <span className="text-zinc-300 font-mono truncate">{String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+          continue;
+        }
+      }
+
       const isPlaintext = /^(plaintext|plain|text)$/i.test(lang) || lang === "";
       if (isPlaintext) {
         const content = codeLines.join("\n").trim();

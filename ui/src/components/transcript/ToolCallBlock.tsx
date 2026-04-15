@@ -257,17 +257,33 @@ export function ToolPair({ call, result }: ToolPairProps) {
               {JSON.stringify(call.input, null, 2)}
             </pre>
           </div>
-          {result && (
-            <div>
-              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-600">Output</p>
-              <pre className="overflow-x-auto font-mono text-[11px] text-zinc-400 leading-relaxed">
-                {(() => {
-                  try { return JSON.stringify(JSON.parse(result.content), null, 2); }
-                  catch { return result.content; }
-                })()}
-              </pre>
-            </div>
-          )}
+          {result && (() => {
+            let parsed: Record<string, unknown> = {};
+            try { parsed = JSON.parse(result.content) as Record<string, unknown>; } catch { /* ok */ }
+            const insight = parsed.sre_insight as Record<string, string> | undefined;
+            const outputOnly = insight ? { ...parsed, sre_insight: undefined } : parsed;
+            return (
+              <>
+                <div>
+                  <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-600">Output</p>
+                  <pre className="overflow-x-auto font-mono text-[11px] text-zinc-400 leading-relaxed">
+                    {JSON.stringify(outputOnly, null, 2)}
+                  </pre>
+                </div>
+                {insight && (insight.interpretation || insight.next_step) && (
+                  <div className="rounded border border-violet-800/30 bg-violet-950/20 px-2.5 py-2">
+                    <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-violet-500">SRE Insight</p>
+                    {insight.interpretation && (
+                      <p className="text-[11px] text-violet-300">{insight.interpretation}</p>
+                    )}
+                    {insight.next_step && (
+                      <p className="mt-0.5 text-[11px] text-zinc-400 italic">{insight.next_step}</p>
+                    )}
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
     </div>
