@@ -225,9 +225,10 @@ The main live view. Two-column layout:
 - Status colors: `PENDING` → zinc · `PROCESSING` → blue · `RESOLVED` → green · `ESCALATED` → amber · `FAILED` → red
 
 **Right — Alert Simulator**
-- Dropdown with 5 built-in scenarios; "Fire Alert" sends the alert to the API and shows the returned incident ID
+- Dropdown with 15 built-in scenarios; "Fire Alert" sends the alert to the API and shows the returned incident ID
 - Use this to trigger the full agent pipeline without Alertmanager
-- Scenarios: High Error Rate (critical), High Latency (warning), Memory Leak (warning), Service Down (critical), CPU Spike (warning)
+- Each scenario shows the expected remediation action hint (restart / scale / escalate)
+- Scenarios span four remediation categories: restart (memory/service issues), scale (traffic/CPU load), escalate (external dependencies), investigate (disk/network/circuit-breaker)
 
 **Right — Service Health**
 - Polls `/health` every 30 seconds
@@ -245,7 +246,7 @@ Full deep-dive for a single incident. Sections (each in its own card):
 | **Header** | Alert name, status badge, incident ID, start time, resolved time, total duration |
 | **Approval Banner** | Amber bar when agent is paused waiting for human approval — Approve / Reject buttons |
 | **Alert Labels** | All Prometheus labels from the original alert (e.g. `service=checkout`, `severity=critical`) |
-| **Analysis** | Agent's summary paragraph + identified root cause |
+| **Analysis** | Agent's plain-text summary and identified root cause (sanitized — no raw JSON) |
 | **Actions** | Numbered timeline of every tool call — action name, input parameters, output/result |
 | **Recommendations** | Bulleted follow-up suggestions from the agent |
 | **Reasoning Transcript** | Full LLM conversation as chat bubbles: system prompt, user turns, assistant reasoning, tool call/result blocks |
@@ -253,10 +254,14 @@ Full deep-dive for a single incident. Sections (each in its own card):
 
 **Approval flow**
 
-When the agent needs to run a destructive action (e.g. `restart_service`), it pauses and the amber banner appears:
+When the agent needs to run a destructive action (e.g. `restart_service`), it pauses:
 
-- **Approve** → `POST /incidents/{id}/approve` — agent resumes and executes the action
-- **Reject** → `POST /incidents/{id}/reject` — agent skips the action and continues reasoning
+1. **Global notification bar** — a pulsing amber banner appears at the top of every page with a direct link to the waiting incident. You don't need to be on the incident page to see it.
+2. **Incident approval banner** — on the incident detail page, the amber banner shows the pending action name, Approve, and Reject buttons.
+3. **Approve** → `POST /incidents/{id}/approve` — agent resumes and executes the action
+4. **Reject** → `POST /incidents/{id}/reject` — agent skips the action and continues reasoning
+
+In `MANUAL` mode every action (including read-only ones like `get_metrics`) triggers the approval gate.
 
 **Post-Incident Review (PIR)**
 
@@ -349,7 +354,8 @@ ui/src/
 │   │   └── ToolCallBlock.tsx       — collapsible tool call + result block
 │   ├── layout/
 │   │   ├── Sidebar.tsx             — nav: Dashboard | Runbooks | MTTR/SLO
-│   │   ├── TopBar.tsx              — page title + live WS indicator
+│   │   ├── TopBar.tsx              — page title + live WS indicator + mode toggle
+│   │   ├── ApprovalNotificationBar.tsx — global amber banner when any incident is PENDING_APPROVAL
 │   │   └── LiveIndicator.tsx       — pulsing green dot when WS connected
 │   └── ui/
 │       ├── Badge.tsx               — generic pill badge
@@ -362,7 +368,8 @@ ui/src/
 │   ├── useWebSocket.ts         — singleton WS with exponential reconnect
 │   ├── useIncidents.ts         — list query + WS-driven cache invalidation
 │   ├── useIncident.ts          — single incident + WS-driven invalidation
-│   ├── useFireAlert.ts         — POST /simulate mutation
+│   ├── useFireAlert.ts         — POST /simulate mutation (15 scenarios)
+│   ├── useAgentMode.ts         — GET/POST agent mode toggle (AUTO/DRY_RUN/MANUAL)
 │   ├── useApproveIncident.ts   — POST /incidents/{id}/approve mutation
 │   ├── useRejectIncident.ts    — POST /incidents/{id}/reject mutation
 │   ├── useRunbooks.ts          — GET /runbooks query
@@ -408,21 +415,51 @@ docker compose logs -f agent-worker
 curl http://localhost:8000/incidents | python3 -m json.tool
 ```
 
-Available alert scenarios (edit `tests/payload.json` or use the UI simulator):
+Available alert scenarios (use the UI Alert Simulator or fire via curl):
 
-| `alertname` | Runbook triggered | What the agent does |
+| `alertname` | Runbook triggered | Expected remediation |
 |-------------|-------------------|---------------------|
-| `HighErrorRate` | high_error_rate | Queries error rate → checks logs → restarts if needed |
-| `HighLatency` | high_latency | Checks p99 latency → CPU usage → scales if needed |
-| `MemoryLeakDetected` | memory_leak | Checks memory growth → OOM logs → restarts |
-| `ServiceDown` | service_down | Checks container status → restarts → escalates if fails |
-| `HighCPU` | cpu_spike | CPU metrics → run_diagnostic → scale up |
+| `HighErrorRate` | high_error_rate | Queries error rate → checks logs → **restart** |
+| `HighLatency` | high_latency | Checks p99 latency → CPU usage → **scale** |
+| `MemoryLeakDetected` | memory_leak | Checks memory growth → OOM logs → **restart** |
+| `ServiceDown` | service_down | Checks container status → **restart** → escalates if fails |
+| `HighCPU` | cpu_spike | CPU metrics → run_diagnostic → **scale** |
+| `DatabaseConnectionPoolExhausted` | database_connection_pool | Pool metrics → logs → **restart** to reset connections |
+| `HighNetworkLatency` | network_latency | Packet loss diagnostics → **escalate** if hardware/infra |
+| `CircuitBreakerOpen` | circuit_breaker_open | Downstream health check → **escalate** if dependency down |
+| `DiskPressure` | disk_pressure | Disk usage → identify large files → **run_diagnostic** / clean |
+| `ServiceDegraded` | service_degradation_scale | Traffic metrics → replica count → **scale** up |
+| `DependencyDown` | dependency_failure | Connectivity check → **escalate** (restart won't help) |
+| `HighTrafficLoad` | high_traffic_load | RPS metrics → replica check → **scale** (do NOT restart) |
+| `CacheExhaustion` | cache_exhaustion | Redis memory metrics → hit rate → **scale** + investigate |
+| `DownstreamFailure` | downstream_dependency | Circuit breaker state → **escalate** to owning team |
+| `PodCrashLoop` | pod_crashloop | OOMKilled logs → **scale** UP to maintain availability |
 
 ---
 
 ## Runbooks
 
-Each runbook is a YAML file in `runbooks/` mapping alert names to investigation and remediation sequences.
+Each runbook is a YAML file in `runbooks/` mapping alert names to investigation and remediation sequences. The registry auto-discovers all `.yml` files on startup — no code changes needed to add one.
+
+### Available Runbooks
+
+| Runbook | Triggers | Primary action |
+|---------|----------|----------------|
+| `high_error_rate` | HighErrorRate | restart_service |
+| `high_latency` | HighLatency | scale_service |
+| `memory_leak` | MemoryLeakDetected | restart_service |
+| `service_down` | ServiceDown | restart_service → escalate |
+| `cpu_spike` | HighCPU | scale_service |
+| `database_connection_pool` | DatabaseConnectionPoolExhausted | restart_service (resets pool) |
+| `network_latency` | HighNetworkLatency | escalate (infra issue) |
+| `circuit_breaker_open` | CircuitBreakerOpen | escalate (downstream) |
+| `disk_pressure` | DiskPressure | run_diagnostic → clean logs |
+| `service_degradation_scale` | ServiceDegraded | scale_service |
+| `dependency_failure` | DependencyDown | escalate (not a local fix) |
+| `high_traffic_load` | HighTrafficLoad | scale_service (NOT restart) |
+| `cache_exhaustion` | CacheExhaustion | scale_service + investigate Redis |
+| `downstream_dependency` | DownstreamFailure | escalate to owning team |
+| `pod_crashloop` | PodCrashLoop | scale_service UP (then investigate OOM) |
 
 ### Adding a New Runbook
 
@@ -461,24 +498,36 @@ No code changes needed — the registry picks up new YAML files on restart. You 
 
 ## Approval Modes
 
-Set via `APPROVAL_MODE` environment variable:
+Set via `APPROVAL_MODE` environment variable (or toggle in the UI top bar — changes take effect for the next incident):
 
 | Mode | Behavior |
 |------|----------|
 | `AUTO` | Auto-approves safe actions (metrics, logs, diagnostics). Prompts for destructive actions. **Default.** |
 | `DRY_RUN` | Logs all actions but never executes any. Safe for testing. |
-| `MANUAL` | Prompts for human approval on every single action. |
+| `MANUAL` | Prompts for human approval on every single action (including read-only ones). |
 
 Destructive actions (require approval in AUTO/MANUAL):
 - `restart_service` — always destructive
 - `scale_service` — only when scaling **down** (replicas < current)
 
-Approvals can be granted via the dashboard banner or the API:
+### How approval works end-to-end
+
+When the agent pauses for approval, the incident status changes to `PENDING_APPROVAL`:
+
+1. A **pulsing amber bar** appears at the top of every dashboard page with a direct link to the incident — visible even if you're on the Runbooks or Stats page.
+2. Opening the incident shows the **approval banner** with the pending action name and Approve / Reject buttons.
+3. Approve or reject — the agent immediately resumes.
+
+Approvals can also be granted via the API:
 
 ```bash
 curl -X POST http://localhost:8000/incidents/<id>/approve \
   -H "Content-Type: application/json" \
   -d '{"action": "restart_service", "operator": "oncall-engineer"}'
+
+curl -X POST http://localhost:8000/incidents/<id>/reject \
+  -H "Content-Type: application/json" \
+  -d '{"action": "restart_service", "reason": "Service is stateful — restart would cause data loss"}'
 ```
 
 ---
@@ -539,6 +588,7 @@ If neither is set, escalations are logged locally to `/tmp/escalations.jsonl` in
 | `GET` | `/runbooks` | List all loaded runbooks |
 | `GET` | `/runbooks/{name}` | Single runbook detail |
 | `GET` | `/runbooks/{name}/yaml` | Raw YAML (for the editor) |
+| `POST` | `/runbooks` | Create a new runbook from YAML body |
 | `PUT` | `/runbooks/{name}` | Save updated YAML (validated before write) |
 
 ### Observability
@@ -622,12 +672,22 @@ ai-runbook-automation/
 │   │   ├── components/         # UI components
 │   │   └── pages/              # Dashboard, IncidentDetail, Runbooks, Stats
 │   └── vite.config.ts          # Proxy: /api and /ws → :8000
-├── runbooks/                   # YAML runbook definitions
-│   ├── high_error_rate.yml
-│   ├── high_latency.yml
-│   ├── memory_leak.yml
-│   ├── service_down.yml
-│   └── cpu_spike.yml
+├── runbooks/                   # YAML runbook definitions (15 total)
+│   ├── high_error_rate.yml         # restart
+│   ├── high_latency.yml            # scale
+│   ├── memory_leak.yml             # restart
+│   ├── service_down.yml            # restart → escalate
+│   ├── cpu_spike.yml               # scale
+│   ├── database_connection_pool.yml
+│   ├── network_latency.yml
+│   ├── circuit_breaker_open.yml
+│   ├── disk_pressure.yml
+│   ├── service_degradation_scale.yml
+│   ├── dependency_failure.yml      # escalate
+│   ├── high_traffic_load.yml       # scale (NOT restart)
+│   ├── cache_exhaustion.yml        # scale + investigate
+│   ├── downstream_dependency.yml   # escalate
+│   └── pod_crashloop.yml           # scale UP then investigate
 ├── simulator/                  # Test environment
 │   ├── mock_prometheus.py      # FastAPI mock Prometheus server
 │   ├── alert_generator.py      # Generates Alertmanager payloads
@@ -676,8 +736,10 @@ make test-cov
 | `tests/test_db.py` | Incident CRUD, MTTR stats (mocked SQLAlchemy) |
 | `tests/test_worker.py` | ARQ job lifecycle, PIR generation |
 | `tests/test_service_resolver.py` | Docker container name resolution |
-| `tests/test_api.py` | FastAPI endpoints (requires running services) |
+| `tests/test_api.py` | All FastAPI endpoints — fully mocked (no real DB/Redis needed) |
 | `tests/test_llm_backends.py` | Ollama + Claude adapter contracts |
+
+All 179 tests run without Docker, Redis, or PostgreSQL — all external services are mocked at the import level.
 
 ### Local Dev (UI hot-reload + Docker backend)
 
