@@ -1,0 +1,38 @@
+name: high_traffic_load
+description: |
+  Handles sudden traffic spikes and load-induced latency without restarting.
+  Scales the service horizontally to absorb traffic. Restart is the last resort
+  only if the service itself is unhealthy (not just overwhelmed).
+
+triggers:
+  - HighTrafficLoad
+  - HighRPS
+  - RequestQueueDepth
+  - TrafficSpike
+
+actions:
+  - "get_metrics: Query RPS — rate(http_requests_total[5m]) and latency p99 — histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))"
+  - "get_service_status: Check current replica count and container health"
+  - "scale_service: Scale UP to 4 replicas to absorb the traffic spike (non-destructive, no approval needed)"
+  - "get_metrics: Re-query latency after scale-up — expect p99 to drop below 1s"
+  - "run_diagnostic: Run alert_status to confirm latency alert resolved"
+
+verification:
+  resolved_when:
+    - "alert_status returns alert_firing=false"
+    - "p99 latency drops below 1s after scaling"
+    - "no increase in error rate during scale-up"
+  escalate_when:
+    - "latency remains high after scaling to 8 replicas"
+    - "error rate climbs above 5% during the traffic spike"
+
+escalation_threshold: |
+  Escalate if p99 latency stays above 2s after scaling to 8 replicas.
+  Indicates capacity limit reached or downstream bottleneck.
+
+metadata:
+  severity: P2
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2026-04-14"
+  primary_action: scale_service

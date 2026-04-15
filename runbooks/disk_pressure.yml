@@ -1,0 +1,43 @@
+name: disk_pressure
+description: |
+  Handles disk space exhaustion — when disk usage exceeds 85% services
+  may fail to write logs, create temp files, or persist data. Identifies
+  what is consuming disk space (logs, core dumps, large temp files) and
+  takes safe cleanup actions.
+
+triggers:
+  - DiskPressure
+  - DiskSpaceLow
+  - DiskUsageHigh
+  - NodeDiskPressure
+
+actions:
+  - "run_diagnostic: Run disk_usage diagnostic to get current utilisation percentage and breakdown by directory"
+  - "get_recent_logs: Fetch last 200 lines — look for 'no space left on device', 'disk full', 'ENOSPC', 'write failed'"
+  - "run_diagnostic: Run alert_status to confirm disk threshold and affected node/service"
+  - "get_metrics: Query disk usage trend — rate(node_filesystem_free_bytes[30m]) to estimate time to full"
+  - "run_diagnostic: Run disk_usage again after identifying large files — confirm which paths are consuming space"
+  - "restart_service: Restart the service to rotate and flush log buffers (requires approval — will temporarily interrupt service)"
+  - "run_diagnostic: Run disk_usage after restart — expect log files rotated, usage drops below 70%"
+  - "run_diagnostic: Run alert_status to confirm alert resolved"
+
+verification:
+  resolved_when:
+    - "disk usage drops below 80%"
+    - "alert_status returns alert_firing=false"
+    - "service write operations succeed"
+  escalate_when:
+    - "disk usage remains above 90% after log rotation"
+    - "core dumps or large data files found (requires manual cleanup)"
+    - "disk usage growing faster than 5% per hour"
+
+escalation_threshold: |
+  Escalate if disk usage reaches 95% or if core dumps / large database
+  files are the cause. These require manual inspection before deletion
+  to avoid losing forensic data.
+
+metadata:
+  severity: P2
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2026-04-14"

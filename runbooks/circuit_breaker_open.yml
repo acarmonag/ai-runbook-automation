@@ -1,0 +1,41 @@
+name: circuit_breaker_open
+description: |
+  Handles open circuit breakers — when a downstream dependency fails
+  repeatedly, circuit breakers trip to OPEN state, causing all downstream
+  calls to fail-fast. This runbook identifies the unhealthy dependency,
+  checks its recovery, and resets the circuit breaker when safe.
+
+triggers:
+  - CircuitBreakerOpen
+  - CircuitBreakerTripped
+  - DependencyUnavailable
+
+actions:
+  - "get_recent_logs: Fetch last 200 lines — look for 'CircuitBreakerOpenException', 'circuit breaker OPEN', 'fallback activated'"
+  - "run_diagnostic: Run alert_status to identify which circuit breaker is open and the dependent service"
+  - "get_metrics: Query error rate of the downstream dependency — rate(http_requests_total{job='<dependency>',status=~'5..'}[5m])"
+  - "run_diagnostic: Run error_rate on the dependency service to confirm it is recovering"
+  - "get_metrics: Re-query dependency error rate — circuit breaker should auto-transition HALF_OPEN when rate drops"
+  - "restart_service: Restart the caller service to force circuit breaker reset if it is stuck OPEN (requires approval)"
+  - "run_diagnostic: Run alert_status after restart — circuit breaker should move to CLOSED"
+
+verification:
+  resolved_when:
+    - "circuit breaker transitions from OPEN to CLOSED"
+    - "downstream dependency error rate drops below 1%"
+    - "alert_status returns alert_firing=false"
+  escalate_when:
+    - "downstream dependency remains unhealthy after 5 minutes"
+    - "circuit breaker stays open after caller restart"
+    - "multiple circuit breakers open simultaneously (cascading failure)"
+
+escalation_threshold: |
+  Escalate if the downstream dependency remains unhealthy for more than
+  5 minutes, or if circuit breakers are opening across multiple services
+  indicating a systemic network or infrastructure failure.
+
+metadata:
+  severity: P2
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2026-04-14"

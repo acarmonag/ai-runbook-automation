@@ -1,0 +1,42 @@
+name: dependency_failure
+description: |
+  Handles complete upstream dependency failures — when a service that
+  others depend on is down or unreachable. Isolates whether the issue
+  is in the dependency itself or in the network path, and coordinates
+  escalation to the owning team if the dependency cannot self-heal.
+
+triggers:
+  - DependencyDown
+  - UpstreamServiceDown
+  - ExternalServiceUnreachable
+  - DependencyHealthCheckFailed
+
+actions:
+  - "run_diagnostic: Run alert_status to identify which dependency is failing and which services are impacted"
+  - "get_recent_logs: Fetch last 200 lines from the affected caller — look for 'connection refused', 'no route to host', 'ECONNREFUSED', 'upstream unavailable'"
+  - "get_metrics: Query error rate of the failing dependency — confirm it is returning 5xx or timing out"
+  - "run_diagnostic: Run error_rate on the dependency to confirm failure rate (100% = complete outage)"
+  - "get_metrics: Re-query after 60 seconds — check if the dependency is self-recovering"
+  - "restart_service: Restart the dependency service to attempt recovery (requires approval — only if owned by this team)"
+  - "run_diagnostic: Run alert_status after restart — confirm dependency is healthy"
+
+verification:
+  resolved_when:
+    - "dependency error rate drops to 0%"
+    - "caller services return to normal error rate"
+    - "alert_status returns alert_firing=false"
+  escalate_when:
+    - "dependency is owned by another team (cannot restart)"
+    - "dependency remains down after restart"
+    - "multiple unrelated dependencies failing simultaneously (infrastructure event)"
+
+escalation_threshold: |
+  Escalate immediately if the dependency is owned by another team, if
+  it cannot be restarted autonomously, or if more than one unrelated
+  dependency is down — which indicates a broader infrastructure incident.
+
+metadata:
+  severity: P1
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2026-04-14"

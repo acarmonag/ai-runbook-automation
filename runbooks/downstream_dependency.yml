@@ -1,0 +1,41 @@
+name: downstream_dependency
+description: |
+  Handles failures caused by downstream service unavailability (database, external API,
+  message queue). Do NOT restart the calling service — the problem is external.
+  Diagnose the dependency, verify circuit breaker state, and escalate if unresolvable.
+
+triggers:
+  - DownstreamFailure
+  - DependencyUnavailable
+  - ExternalAPIError
+  - DatabaseConnectionFailed
+  - MessageQueueDown
+
+actions:
+  - "get_metrics: Query upstream error rate — rate(http_requests_total{status=~'5..'}[5m]) and dependency-specific metrics"
+  - "get_recent_logs: Fetch last 200 lines — look for 'Connection refused', timeout errors, circuit breaker OPEN"
+  - "get_service_status: Check if the dependent service (database, cache, queue) is running"
+  - "run_diagnostic: Run connection_count to check active connections to the dependency"
+  - "run_diagnostic: Run alert_status to confirm whether the upstream alert has already resolved"
+  - "escalate: If dependency is confirmed down with no automated fix available, escalate to the on-call team"
+
+verification:
+  resolved_when:
+    - "alert_status returns alert_firing=false"
+    - "dependency connection errors disappear from logs"
+    - "error rate drops below 1%"
+  escalate_when:
+    - "dependency is confirmed unreachable after 2 diagnostic checks"
+    - "circuit breaker is OPEN and no recovery path exists"
+    - "external API SLA breach confirmed"
+
+escalation_threshold: |
+  Always escalate when a downstream dependency is confirmed unavailable.
+  Restarting the calling service will not fix an external dependency failure.
+
+metadata:
+  severity: P1
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2026-04-14"
+  primary_action: escalate

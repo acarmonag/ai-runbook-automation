@@ -5,17 +5,33 @@ import { Spinner } from "@/components/ui/Spinner";
 import { Zap } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 
-const SCENARIOS: { value: Scenario; label: string; severity: string }[] = [
-  { value: "high_error_rate", label: "High Error Rate",  severity: "critical" },
-  { value: "high_latency",    label: "High Latency",     severity: "warning"  },
-  { value: "memory_leak",     label: "Memory Leak",      severity: "warning"  },
-  { value: "service_down",    label: "Service Down",     severity: "critical" },
-  { value: "cpu_spike",       label: "CPU Spike",        severity: "warning"  },
+const SCENARIOS: { value: Scenario; label: string; severity: string; action: string }[] = [
+  { value: "high_error_rate",           label: "High Error Rate",         severity: "critical", action: "restart"  },
+  { value: "high_latency",              label: "High Latency",            severity: "warning",  action: "restart"  },
+  { value: "memory_leak",               label: "Memory Leak",             severity: "warning",  action: "restart"  },
+  { value: "service_down",              label: "Service Down",            severity: "critical", action: "restart"  },
+  { value: "cpu_spike",                 label: "CPU Spike",               severity: "warning",  action: "restart"  },
+  { value: "database_connection_pool",  label: "DB Connection Pool",      severity: "critical", action: "restart"  },
+  { value: "network_latency",           label: "Network Latency",         severity: "warning",  action: "escalate" },
+  { value: "circuit_breaker_open",      label: "Circuit Breaker Open",    severity: "critical", action: "escalate" },
+  { value: "disk_pressure",             label: "Disk Pressure",           severity: "warning",  action: "escalate" },
+  { value: "service_degradation_scale", label: "Service Degradation",     severity: "warning",  action: "scale"    },
+  { value: "dependency_failure",        label: "Dependency Failure",      severity: "critical", action: "escalate" },
+  { value: "high_traffic_load",         label: "High Traffic (Scale)",    severity: "warning",  action: "scale"    },
+  { value: "cache_exhaustion",          label: "Cache Exhaustion",        severity: "warning",  action: "scale"    },
+  { value: "downstream_dependency",     label: "Downstream Dependency",   severity: "critical", action: "escalate" },
+  { value: "pod_crashloop",             label: "Pod CrashLoop",           severity: "critical", action: "scale"    },
 ];
 
 const severityColor: Record<string, string> = {
   critical: "text-red-400",
   warning:  "text-amber-400",
+};
+
+const actionHint: Record<string, string> = {
+  restart:  "Expected action: restart service",
+  scale:    "Expected action: scale service",
+  escalate: "Expected action: escalate to on-call",
 };
 
 export function AlertSimulator() {
@@ -40,9 +56,16 @@ export function AlertSimulator() {
               </option>
             ))}
           </select>
-          <p className={`mt-1 text-xs ${severityColor[SCENARIOS.find(s => s.value === scenario)?.severity ?? "warning"]}`}>
-            {SCENARIOS.find(s => s.value === scenario)?.severity}
-          </p>
+          {(() => {
+            const s = SCENARIOS.find(sc => sc.value === scenario);
+            return s ? (
+              <div className="mt-1 flex items-center gap-2">
+                <span className={`text-xs ${severityColor[s.severity]}`}>{s.severity}</span>
+                <span className="text-xs text-zinc-600">·</span>
+                <span className="text-xs text-zinc-500">{actionHint[s.action]}</span>
+              </div>
+            ) : null;
+          })()}
         </div>
 
         <Button onClick={handleFire} disabled={isPending} className="w-full justify-center">

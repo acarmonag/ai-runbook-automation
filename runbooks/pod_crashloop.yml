@@ -1,0 +1,42 @@
+name: pod_crashloop
+description: |
+  Handles a service caught in a crash/restart loop (OOMKilled, SIGSEGV, failed health checks).
+  Investigates root cause BEFORE restarting. If OOMKilled → scale UP memory or replicas.
+  If config/startup error → escalate rather than restart blindly.
+
+triggers:
+  - PodCrashLoop
+  - ContainerRestarting
+  - OOMKilled
+  - UnhealthyContainer
+
+actions:
+  - "get_service_status: Check restart count, last exit code, and container state"
+  - "get_recent_logs: Fetch last 200 lines — look for OOMKilled, panic, startup errors, missing env vars"
+  - "run_diagnostic: Run memory_pressure to check if the container is being OOM-killed"
+  - "run_diagnostic: Run error_rate to check if requests are failing during crash loops"
+  - "scale_service: Scale UP to 3 replicas to maintain availability while investigating (non-destructive)"
+  - "restart_service: Restart only if logs show a known transient issue (connection blip, startup race condition)"
+  - "get_service_status: Confirm service stabilised after restart — check restart count"
+  - "run_diagnostic: Run alert_status to confirm crash loop alert resolved"
+
+verification:
+  resolved_when:
+    - "alert_status returns alert_firing=false"
+    - "container restart count stops increasing"
+    - "service health check returns 200"
+  escalate_when:
+    - "OOMKilled repeatedly with memory limits already at maximum"
+    - "startup error indicates missing configuration or secret"
+    - "service restarts more than 5 times in 10 minutes"
+
+escalation_threshold: |
+  Escalate if the service OOMKills despite sufficient memory, or if exit code indicates
+  a configuration error (code 1 on startup). Restart loops are usually symptom, not cause.
+
+metadata:
+  severity: P1
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2026-04-14"
+  primary_action: scale_service

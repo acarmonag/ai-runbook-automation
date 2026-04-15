@@ -1,0 +1,41 @@
+name: cache_exhaustion
+description: |
+  Handles Redis/in-memory cache exhaustion causing elevated latency and cache misses.
+  Primary remediation is cache diagnostics and selective eviction — NOT a service restart.
+  A restart would clear hot cache state and make latency worse temporarily.
+
+triggers:
+  - CacheExhaustion
+  - HighCacheMiss
+  - RedisMemoryHigh
+  - CacheHitRateLow
+
+actions:
+  - "get_metrics: Query cache miss rate — rate(cache_misses_total[5m]) / rate(cache_requests_total[5m])"
+  - "get_recent_logs: Fetch last 100 lines from cache/redis service — look for OOM eviction, max-memory-policy triggers"
+  - "run_diagnostic: Run memory_pressure to check current memory usage"
+  - "run_diagnostic: Run connection_count to verify cache connection pool is healthy"
+  - "scale_service: Scale the application UP to 3 replicas to distribute cache load (non-destructive)"
+  - "get_metrics: Re-query cache miss rate and latency after scaling"
+  - "run_diagnostic: Run alert_status to confirm cache alert resolved"
+
+verification:
+  resolved_when:
+    - "alert_status returns alert_firing=false"
+    - "cache hit rate recovers above 80%"
+    - "p99 latency returns below 500ms"
+  escalate_when:
+    - "cache miss rate stays above 50% after scaling"
+    - "Redis OOM errors appear in logs"
+    - "memory pressure continues to grow"
+
+escalation_threshold: |
+  Escalate if cache miss rate exceeds 50% after scaling. Indicates Redis instance
+  needs capacity increase or TTL policy tuning — requires operator intervention.
+
+metadata:
+  severity: P3
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2026-04-14"
+  primary_action: scale_service

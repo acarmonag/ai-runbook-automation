@@ -1,0 +1,42 @@
+name: service_degradation_scale
+description: |
+  Handles gradual service degradation under load — when a service is
+  handling more traffic than its current replica count can sustain, causing
+  elevated latency and partial errors. Scales out replicas to restore
+  capacity without a full restart.
+
+triggers:
+  - ServiceDegraded
+  - HighRequestRate
+  - ReplicaCountLow
+  - AutoscalerFailed
+
+actions:
+  - "get_metrics: Query request rate — rate(http_requests_total[5m]) to confirm traffic spike"
+  - "get_metrics: Query p99 latency — histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))"
+  - "run_diagnostic: Run alert_status to identify affected service and current replica count"
+  - "get_recent_logs: Fetch last 100 lines — look for 'queue full', 'thread pool exhausted', '503 Service Unavailable'"
+  - "scale_service: Scale the service to handle current traffic load (requires approval)"
+  - "get_metrics: Re-query request rate and latency — expect p99 to drop as new replicas come online"
+  - "run_diagnostic: Run alert_status to confirm degradation alert resolved"
+
+verification:
+  resolved_when:
+    - "p99 latency returns below SLO threshold"
+    - "error rate drops below 1%"
+    - "alert_status returns alert_firing=false"
+  escalate_when:
+    - "service does not scale (HPA misconfigured, resource quota hit)"
+    - "degradation persists after scale-out (logic error, not capacity)"
+    - "new replicas fail to start (image pull error, OOMKilled)"
+
+escalation_threshold: |
+  Escalate if the service fails to scale (quota exhausted, HPA broken)
+  or if degradation continues after adding replicas — indicates the
+  bottleneck is not compute capacity.
+
+metadata:
+  severity: P2
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2026-04-14"

@@ -1,0 +1,41 @@
+name: network_latency
+description: |
+  Handles elevated network latency between services — covers inter-service
+  call timeouts, DNS resolution delays, and upstream dependency slowness.
+  Diagnoses whether the latency is in the service itself, its dependencies,
+  or the network fabric before taking remediation steps.
+
+triggers:
+  - HighNetworkLatency
+  - InterServiceLatencyHigh
+  - P99LatencyHigh
+  - SlowDependency
+
+actions:
+  - "get_metrics: Query p95/p99 latency — histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))"
+  - "run_diagnostic: Run alert_status to identify which service-to-service path is slow"
+  - "get_recent_logs: Fetch last 200 lines — look for 'timeout', 'connection refused', 'context deadline exceeded', 'read timeout'"
+  - "get_metrics: Query downstream error rates to distinguish slow dependency from local issue"
+  - "run_diagnostic: Run error_rate diagnostic on the upstream dependency service"
+  - "scale_service: Scale out the slow service by 1 replica to reduce per-instance load (requires approval)"
+  - "get_metrics: Re-query p99 latency — expect drop below 500ms SLO threshold"
+  - "run_diagnostic: Run alert_status to confirm alert resolved"
+
+verification:
+  resolved_when:
+    - "p99 latency drops below 500ms"
+    - "alert_status returns alert_firing=false"
+  escalate_when:
+    - "latency remains elevated after scale-out"
+    - "downstream dependency is unreachable (separate incident required)"
+    - "latency is in the database layer (requires DBA review)"
+
+escalation_threshold: |
+  Escalate if p99 latency remains above 1s after scaling, or if the slow
+  path traces back to an external dependency outside the service mesh.
+
+metadata:
+  severity: P2
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2026-04-14"

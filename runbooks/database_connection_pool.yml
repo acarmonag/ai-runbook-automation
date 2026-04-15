@@ -1,0 +1,41 @@
+name: database_connection_pool
+description: |
+  Handles database connection pool exhaustion — when the pool is saturated
+  (all connections in use, new requests queuing), queries time out and
+  services degrade. Investigates slow queries, idle connections, and pool
+  size misconfigurations before considering a service restart.
+
+triggers:
+  - DatabaseConnectionPoolExhausted
+  - DBConnectionTimeout
+  - HighDBConnectionCount
+
+actions:
+  - "run_diagnostic: Run connection_count diagnostic to get current pool utilization (used, idle, waiting)"
+  - "get_recent_logs: Fetch last 200 lines from the affected service — look for 'connection pool exhausted', 'timeout acquiring connection', 'HikariPool'"
+  - "get_metrics: Query active DB connections — pg_stat_activity count grouped by state"
+  - "run_diagnostic: Run alert_status to confirm the alert is still firing"
+  - "restart_service: Restart the service to release all stale connections and reset the pool (requires approval if pool >90%)"
+  - "run_diagnostic: Run connection_count after restart — expect waiting=0 and used<50% of pool"
+  - "run_diagnostic: Run alert_status to confirm alert resolved"
+
+verification:
+  resolved_when:
+    - "connection pool utilization drops below 70%"
+    - "waiting connections returns to 0"
+    - "alert_status returns alert_firing=false"
+  escalate_when:
+    - "connection count stays high after restart (indicates connection leak)"
+    - "slow query count remains elevated (DBA intervention required)"
+    - "pool utilization returns to >90% within 2 minutes of restart"
+
+escalation_threshold: |
+  Escalate to DBA team if connection pool exhaustion recurs within 5 minutes
+  of a service restart, which indicates a connection leak requiring a code fix.
+  Also escalate if pg_stat_activity shows long-running queries blocking others.
+
+metadata:
+  severity: P2
+  team: platform
+  runbook_version: "1.0"
+  last_updated: "2026-04-14"
