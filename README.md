@@ -4,6 +4,10 @@ An LLM-powered autonomous SRE agent that monitors alerts from Prometheus/Alertma
 
 **This is NOT a chatbot.** It is an autonomous remediation agent with a human-approval gate for destructive actions. The LLM (Ollama or Claude) is used purely as a reasoning engine inside a tool-use loop.
 
+> **Sub-module documentation**
+> - [`api/README.md`](api/README.md) — Endpoint reference, WebSocket protocol, authentication, error codes
+> - [`ui/README.md`](ui/README.md) — Component map, hooks reference, state management, dev setup
+
 ---
 
 ## Architecture
@@ -386,15 +390,16 @@ ui/src/
 
 ### UI Tech Stack
 
-| Library | Purpose |
-|---------|---------|
-| React 18 | UI framework |
-| TypeScript 5 | Type safety |
-| TailwindCSS 3 | Dark-theme styling |
-| TanStack Query v5 | Server state: fetching, caching, mutations |
-| React Router v6 | Client-side routing |
-| Vite 5 | Dev server + build tool |
-| Lucide React | Icons |
+| Library | Version | Purpose |
+|---------|---------|---------|
+| React | 18 | UI framework |
+| TypeScript | 5 | Type safety |
+| TailwindCSS | 3 | Dark-theme styling |
+| TanStack Query | v5 | Server state: fetching, caching, mutations |
+| React Router | v7 | Client-side routing |
+| Vite | 6 | Dev server + build tool |
+| date-fns | 4 | Date/time formatting |
+| Lucide React | 0.468 | Icons |
 
 ---
 
@@ -498,7 +503,7 @@ No code changes needed — the registry picks up new YAML files on restart. You 
 
 ## Approval Modes
 
-Set via `APPROVAL_MODE` environment variable (or toggle in the UI top bar — changes take effect for the next incident):
+Set via the `APPROVAL_MODE` environment variable, or toggled at runtime from the **UI top bar** (`AUTO` → `MANUAL` → `DRY_RUN`). Runtime changes are persisted in Redis and take effect for the next incident — no restart needed:
 
 | Mode | Behavior |
 |------|----------|
