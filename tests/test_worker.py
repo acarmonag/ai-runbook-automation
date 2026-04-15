@@ -326,13 +326,15 @@ class TestPirGeneration:
         calls = self._run_job("RESOLVED")
         assert len(calls) == 1
 
-    def test_pir_not_generated_for_escalated(self):
+    def test_pir_generated_for_escalated(self):
+        # PIR is now generated for all terminal statuses, including ESCALATED
         calls = self._run_job("ESCALATED")
-        assert len(calls) == 0
+        assert len(calls) == 1
 
-    def test_pir_not_generated_for_failed(self):
+    def test_pir_generated_for_failed(self):
+        # PIR is now generated for all terminal statuses, including FAILED
         calls = self._run_job("FAILED")
-        assert len(calls) == 0
+        assert len(calls) == 1
 
 
 # ─── PIR generator unit tests ─────────────────────────────────────────────────
