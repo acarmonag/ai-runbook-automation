@@ -8,6 +8,8 @@ venv/
 *.egg-info/
 .pytest_cache/
 .coverage
+.claude
+.calude-flow
 htmlcov/
 dist/
 build/
